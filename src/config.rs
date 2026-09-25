@@ -144,6 +144,11 @@ pub struct KeyMap {
     pub rename: Keys,
     pub checkout: Keys,
     pub checkout_new: Keys,
+    pub yank: Keys,
+    pub merge: Keys,
+    pub rebase: Keys,
+    /// Open the continue / resolve / abort prompt for the merge / rebase in progress.
+    pub operation: Keys,
     pub reload: Keys,
     pub quit: Keys,
 }
@@ -162,6 +167,10 @@ impl Default for KeyMap {
             rename: Keys::of(&["r"]),
             checkout: Keys::of(&["enter"]),
             checkout_new: Keys::of(&["b"]),
+            yank: Keys::of(&["y"]),
+            merge: Keys::of(&["p"]),
+            rebase: Keys::of(&["P"]),
+            operation: Keys::of(&["o"]),
             reload: Keys::of(&["R"]),
             quit: Keys::of(&["q", "ctrl+c"]),
         }
@@ -173,6 +182,12 @@ impl Default for KeyMap {
 pub struct Config {
     /// Ask for confirmation before deleting branches.
     pub confirm_delete: bool,
+    /// Command opened on the conflicted files to resolve a merge / rebase conflict,
+    /// split on whitespace (e.g. `"code"`, `"nvim -d"`).
+    pub editor: String,
+    /// Stash uncommitted changes around a merge / rebase that needs the working tree,
+    /// instead of refusing to start.
+    pub autostash: bool,
     pub keys: KeyMap,
 }
 
@@ -180,6 +195,8 @@ impl Default for Config {
     fn default() -> Self {
         Config {
             confirm_delete: true,
+            editor: "code".into(),
+            autostash: false,
             keys: KeyMap::default(),
         }
     }
@@ -221,6 +238,7 @@ mod tests {
     fn empty_config_uses_defaults() {
         let cfg = parse("").unwrap();
         assert!(cfg.confirm_delete);
+        assert_eq!(cfg.editor, "code");
         assert_eq!(cfg.keys.down, Keys::of(&["j", "down"]));
     }
 
@@ -229,6 +247,7 @@ mod tests {
         let cfg = parse(
             r#"
 confirm_delete = false
+editor = "vim"
 [keys]
 down = "n"
 up = ["e", "up"]
@@ -236,6 +255,7 @@ up = ["e", "up"]
         )
         .unwrap();
         assert!(!cfg.confirm_delete);
+        assert_eq!(cfg.editor, "vim");
         assert_eq!(cfg.keys.down, Keys::of(&["n"]));
         assert_eq!(cfg.keys.up, Keys::of(&["e", "up"]));
         assert_eq!(cfg.keys.delete, Keys::of(&["d"]));

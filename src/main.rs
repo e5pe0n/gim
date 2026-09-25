@@ -4,9 +4,14 @@ mod app;
 mod config;
 mod git;
 mod input;
+mod ops;
 mod ui;
 
-use std::{env, path::PathBuf, process::ExitCode};
+use std::{
+    env,
+    path::PathBuf,
+    process::{Command, ExitCode},
+};
 
 use ratatui::crossterm::event::{self, Event, KeyEventKind};
 
@@ -59,6 +64,16 @@ fn event_loop(terminal: &mut ratatui::DefaultTerminal, app: &mut App) -> std::io
             && key.kind == KeyEventKind::Press
         {
             app.handle_key(key);
+        }
+        if let Some(req) = app.editor_request.take() {
+            // Hand the terminal to the editor (terminal editors need it; GUI ones return at once).
+            ratatui::restore();
+            let result = Command::new(&req.program)
+                .args(&req.args)
+                .current_dir(&req.dir)
+                .status();
+            *terminal = ratatui::try_init()?;
+            app.editor_done(result);
         }
     }
     Ok(())
