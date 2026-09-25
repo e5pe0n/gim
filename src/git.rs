@@ -81,4 +81,40 @@ impl Repo {
     pub fn checkout(&self, name: &str) -> Result<(), String> {
         self.run(&["checkout", name, "--"]).map(|_| ())
     }
+
+    /// Check out `into` and `git merge` `branch` into it.
+    pub fn merge(&self, branch: &str, into: &str) -> Result<(), String> {
+        self.checkout(into)?;
+        self.run(&["merge", "--no-edit", branch]).map(|_| ())
+    }
+
+    /// `git rebase <onto> <branch>`: replay `branch` on top of `onto` (leaves `branch` checked out).
+    pub fn rebase(&self, branch: &str, onto: &str) -> Result<(), String> {
+        self.run(&["rebase", onto, branch]).map(|_| ())
+    }
+
+    pub fn merge_abort(&self) -> Result<(), String> {
+        self.run(&["merge", "--abort"]).map(|_| ())
+    }
+
+    pub fn rebase_abort(&self) -> Result<(), String> {
+        self.run(&["rebase", "--abort"]).map(|_| ())
+    }
+
+    /// Paths with unresolved conflicts, relative to the top level.
+    pub fn conflicted_files(&self) -> Result<Vec<String>, String> {
+        let out = self.run(&["diff", "--name-only", "--diff-filter=U"])?;
+        Ok(out
+            .lines()
+            .filter(|l| !l.is_empty())
+            .map(String::from)
+            .collect())
+    }
+
+    /// Absolute path of the working tree's top level.
+    pub fn toplevel(&self) -> Result<PathBuf, String> {
+        Ok(PathBuf::from(
+            self.run(&["rev-parse", "--show-toplevel"])?.trim(),
+        ))
+    }
 }

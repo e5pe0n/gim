@@ -9,7 +9,7 @@ use ratatui::{
 };
 use unicode_width::UnicodeWidthStr;
 
-use crate::app::{App, Mode};
+use crate::app::{App, ConflictChoice, Integrate, Mode};
 use crate::config::Keys;
 
 pub fn draw(frame: &mut Frame, app: &mut App) {
@@ -30,6 +30,9 @@ pub fn draw(frame: &mut Frame, app: &mut App) {
                 .fg(Color::Black)
                 .bg(Color::Magenta),
         );
+    }
+    if let Some(y) = &app.yanked {
+        title.push(Span::from(format!("  yanked: {y}")).fg(Color::Cyan));
     }
     frame.render_widget(Line::from(title), title_area);
 
@@ -53,6 +56,7 @@ pub fn draw(frame: &mut Frame, app: &mut App) {
             };
             Line::from(format!("{verb} {}? [y/N]", app.pending_delete.join(", "))).fg(Color::Red)
         }
+        Mode::Conflict => conflict_line(app),
         _ => match &app.status {
             Some(s) if s.error => Line::from(one_line(&s.text)).fg(Color::Red),
             Some(s) => Line::from(s.text.clone()).fg(Color::Green),
@@ -125,10 +129,37 @@ fn draw_list(frame: &mut Frame, app: &mut App, area: ratatui::layout::Rect) {
     frame.render_stateful_widget(List::new(items), area, &mut app.list_state);
 }
 
+fn conflict_line(app: &App) -> Line<'static> {
+    let Some(c) = &app.conflict else {
+        return Line::default();
+    };
+    let text = match c.op {
+        Integrate::Merge => format!("Conflicts merging {} into {}: ", c.branch, c.target),
+        Integrate::Rebase => format!("Conflicts rebasing {} onto {}: ", c.branch, c.target),
+    };
+    let option = |label: &'static str, choice: ConflictChoice| {
+        let span = Span::from(format!(" {label} "));
+        if c.choice == choice {
+            span.bold().fg(Color::Black).bg(Color::Yellow)
+        } else {
+            span
+        }
+    };
+    Line::from(vec![
+        Span::from(text).fg(Color::Red),
+        option("resolve", ConflictChoice::Resolve),
+        Span::raw(" "),
+        option("abort", ConflictChoice::Abort),
+    ])
+}
+
 fn help(app: &App) -> String {
     match app.mode {
         Mode::Rename | Mode::Create => return "enter: confirm  esc: cancel".into(),
         Mode::Confirm => return "y: confirm  any other key: cancel".into(),
+        Mode::Conflict => {
+            return "h/l: choose  enter: select  r: resolve  a: abort".into();
+        }
         _ => {}
     }
     let k = &app.cfg.keys;
@@ -140,7 +171,12 @@ fn help(app: &App) -> String {
         (&k.rename, "rename"),
         (&k.delete, "delete"),
         (&k.force_delete, "force delete"),
+        (&k.yank, "yank"),
     ];
+    if app.yanked.is_some() {
+        parts.push((&k.merge, "merge yanked"));
+        parts.push((&k.rebase, "rebase yanked"));
+    }
     if app.mode == Mode::Visual {
         parts.push((&k.cancel, "cancel"));
     } else {

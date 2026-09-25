@@ -1,5 +1,7 @@
 //! Application state and key handling.
 
+use std::path::PathBuf;
+
 use ratatui::crossterm::event::{KeyCode, KeyEvent, KeyModifiers};
 use ratatui::widgets::ListState;
 
@@ -15,6 +17,42 @@ pub enum Mode {
     /// Prompting for a new branch name to `checkout -b` from the cursor branch.
     Create,
     Confirm,
+    /// A merge / rebase stopped on conflicts: choose to resolve or abort.
+    Conflict,
+}
+
+/// How the yanked branch is combined with the cursor branch.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum Integrate {
+    /// Merge the yanked branch into the cursor branch.
+    Merge,
+    /// Rebase the yanked branch onto the cursor branch.
+    Rebase,
+}
+
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum ConflictChoice {
+    Resolve,
+    Abort,
+}
+
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct Conflict {
+    pub op: Integrate,
+    /// The yanked branch.
+    pub branch: String,
+    /// The cursor branch it was merged into / rebased onto.
+    pub target: String,
+    pub files: Vec<String>,
+    pub choice: ConflictChoice,
+}
+
+/// An editor to run with the terminal released; the event loop takes and runs it.
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct EditorRequest {
+    pub program: String,
+    pub args: Vec<String>,
+    pub dir: PathBuf,
 }
 
 #[derive(Debug, Clone, PartialEq, Eq)]
@@ -38,6 +76,10 @@ pub struct App {
     pub input_target: String,
     pub pending_delete: Vec<String>,
     pub pending_force: bool,
+    /// Branch yanked with `y`, merged / rebased with `p` / `P`.
+    pub yanked: Option<String>,
+    pub conflict: Option<Conflict>,
+    pub editor_request: Option<EditorRequest>,
     pub status: Option<Status>,
     pub list_state: ListState,
     pub quit: bool,
@@ -57,6 +99,9 @@ impl App {
             input_target: String::new(),
             pending_delete: Vec::new(),
             pending_force: false,
+            yanked: None,
+            conflict: None,
+            editor_request: None,
             status: None,
             list_state: ListState::default(),
             quit: false,
@@ -112,6 +157,7 @@ impl App {
         match self.mode {
             Mode::Rename | Mode::Create => self.handle_input(ev),
             Mode::Confirm => self.handle_confirm(ev),
+            Mode::Conflict => self.handle_conflict(ev),
             Mode::Normal | Mode::Visual => self.handle_list(ev),
         }
     }
@@ -153,6 +199,160 @@ impl App {
             self.start_input(Mode::Create);
         } else if k.checkout.matches(&ev) {
             self.checkout();
+        } else if k.yank.matches(&ev) {
+            self.yank();
+        } else if k.merge.matches(&ev) {
+            self.integrate(Integrate::Merge);
+        } else if k.rebase.matches(&ev) {
+            self.integrate(Integrate::Rebase);
+        }
+    }
+
+    fn yank(&mut self) {
+        let Some(name) = self.branches.get(self.cursor).map(|b| b.name.clone()) else {
+            return;
+        };
+        self.mode = Mode::Normal;
+        self.set_status(format!("yanked {name}"), false);
+        self.yanked = Some(name);
+    }
+
+    /// Merge the yanked branch into, or rebase it onto, the cursor branch.
+    fn integrate(&mut self, op: Integrate) {
+        let Some(target) = self.branches.get(self.cursor).map(|b| b.name.clone()) else {
+            return;
+        };
+        self.mode = Mode::Normal;
+        let Some(branch) = self.yanked.clone() else {
+            self.set_status("nothing yanked", true);
+            return;
+        };
+        if branch == target {
+            self.set_status(format!("{branch} is the yanked branch itself"), true);
+            return;
+        }
+        let result = match op {
+            Integrate::Merge => self.repo.merge(&branch, &target),
+            Integrate::Rebase => self.repo.rebase(&branch, &target),
+        };
+        let reloaded = self.reload();
+        let err = match result.and(reloaded) {
+            Ok(()) => {
+                let done = match op {
+                    Integrate::Merge => format!("merged {branch} into {target}"),
+                    Integrate::Rebase => format!("rebased {branch} onto {target}"),
+                };
+                self.set_status(done, false);
+                return;
+            }
+            Err(e) => e,
+        };
+        match self.repo.conflicted_files() {
+            Ok(files) if !files.is_empty() => {
+                self.conflict = Some(Conflict {
+                    op,
+                    branch,
+                    target,
+                    files,
+                    choice: ConflictChoice::Resolve,
+                });
+                self.mode = Mode::Conflict;
+            }
+            _ => self.set_status(err, true),
+        }
+    }
+
+    fn handle_conflict(&mut self, ev: KeyEvent) {
+        let Some(conflict) = self.conflict.as_mut() else {
+            self.mode = Mode::Normal;
+            return;
+        };
+        let k = &self.cfg.keys;
+        let choice = match ev.code {
+            KeyCode::Char('c') if ev.modifiers.contains(KeyModifiers::CONTROL) => {
+                self.quit = true;
+                return;
+            }
+            KeyCode::Char('r') => ConflictChoice::Resolve,
+            KeyCode::Char('a') => ConflictChoice::Abort,
+            KeyCode::Enter => conflict.choice,
+            KeyCode::Left
+            | KeyCode::Right
+            | KeyCode::Tab
+            | KeyCode::BackTab
+            | KeyCode::Char('h' | 'l') => {
+                conflict.choice = toggle(conflict.choice);
+                return;
+            }
+            _ if k.up.matches(&ev) || k.down.matches(&ev) => {
+                conflict.choice = toggle(conflict.choice);
+                return;
+            }
+            _ => return,
+        };
+        let conflict = self.conflict.take().expect("checked above");
+        self.mode = Mode::Normal;
+        match choice {
+            ConflictChoice::Resolve => self.resolve(conflict),
+            ConflictChoice::Abort => self.abort(conflict),
+        }
+    }
+
+    fn resolve(&mut self, conflict: Conflict) {
+        let mut words = self.cfg.editor.split_whitespace().map(String::from);
+        let Some(program) = words.next() else {
+            self.set_status("no editor configured", true);
+            return;
+        };
+        let dir = match self.repo.toplevel() {
+            Ok(dir) => dir,
+            Err(e) => {
+                self.set_status(e, true);
+                return;
+            }
+        };
+        let mut args: Vec<String> = words.collect();
+        args.extend(conflict.files);
+        self.editor_request = Some(EditorRequest { program, args, dir });
+        let next = match conflict.op {
+            Integrate::Merge => "git commit",
+            Integrate::Rebase => "git rebase --continue",
+        };
+        self.set_status(
+            format!("resolve the conflicts, then git add and {next}"),
+            false,
+        );
+    }
+
+    /// Called by the event loop once the requested editor has been run.
+    pub fn editor_done(&mut self, result: std::io::Result<std::process::ExitStatus>) {
+        let err = match result {
+            Ok(status) if status.success() => None,
+            Ok(status) => Some(format!("editor exited with {status}")),
+            Err(e) => Some(format!("failed to run editor {:?}: {e}", self.cfg.editor)),
+        };
+        if let Some(e) = err {
+            self.set_status(e, true);
+        }
+        if let Err(e) = self.reload() {
+            self.set_status(e, true);
+        }
+    }
+
+    fn abort(&mut self, conflict: Conflict) {
+        let result = match conflict.op {
+            Integrate::Merge => self.repo.merge_abort(),
+            Integrate::Rebase => self.repo.rebase_abort(),
+        };
+        match result.and_then(|_| self.reload()) {
+            Ok(()) => {
+                let what = match conflict.op {
+                    Integrate::Merge => "merge",
+                    Integrate::Rebase => "rebase",
+                };
+                self.set_status(format!("{what} aborted"), false);
+            }
+            Err(e) => self.set_status(e, true),
         }
     }
 
@@ -254,6 +454,13 @@ impl App {
     }
 }
 
+fn toggle(c: ConflictChoice) -> ConflictChoice {
+    match c {
+        ConflictChoice::Resolve => ConflictChoice::Abort,
+        ConflictChoice::Abort => ConflictChoice::Resolve,
+    }
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
@@ -277,6 +484,9 @@ mod tests {
     fn setup(branches: &[&str]) -> (TempDir, App) {
         let dir = tempfile::tempdir().unwrap();
         git(dir.path(), &["init", "-q", "-b", "main"]);
+        // The app's own merges / rebases commit too.
+        git(dir.path(), &["config", "user.name", "t"]);
+        git(dir.path(), &["config", "user.email", "t@t"]);
         git(dir.path(), &["commit", "-q", "--allow-empty", "-m", "init"]);
         for b in branches {
             git(dir.path(), &["branch", b]);
@@ -303,6 +513,28 @@ mod tests {
             };
             app.handle_key(ev);
         }
+    }
+
+    /// Commit `content` to `file` on `branch`, then go back to main.
+    fn commit_file(dir: &std::path::Path, branch: &str, file: &str, content: &str) {
+        git(dir, &["checkout", "-q", branch]);
+        std::fs::write(dir.join(file), content).unwrap();
+        git(dir, &["add", file]);
+        git(dir, &["commit", "-q", "-m", &format!("{file} on {branch}")]);
+        git(dir, &["checkout", "-q", "main"]);
+    }
+
+    fn rev(dir: &std::path::Path, args: &[&str]) -> String {
+        let out = Command::new("git")
+            .current_dir(dir)
+            .args(args)
+            .output()
+            .unwrap();
+        String::from_utf8_lossy(&out.stdout).trim().to_string()
+    }
+
+    fn cursor_to(app: &mut App, name: &str) {
+        app.cursor = app.branches.iter().position(|b| b.name == name).unwrap();
     }
 
     fn names(app: &App) -> Vec<String> {
@@ -384,6 +616,111 @@ mod tests {
         let cur = &app.branches[app.cursor];
         assert!(cur.current && cur.name == "feat", "{:?}", app.status);
         assert_eq!(cur.subject, "on base");
+    }
+
+    #[test]
+    fn merge_and_rebase_need_a_yank() {
+        let (_d, mut app) = setup(&["a"]);
+        press(&mut app, &["p"]);
+        assert!(app.status.as_ref().is_some_and(|s| s.error));
+        press(&mut app, &["g", "y", "P"]);
+        assert_eq!(app.yanked.as_deref(), Some("a"));
+        assert!(app.status.as_ref().is_some_and(|s| s.error), "self rebase");
+    }
+
+    #[test]
+    fn yank_and_merge() {
+        let (d, mut app) = setup(&["feat"]);
+        commit_file(d.path(), "feat", "f", "feat");
+        commit_file(d.path(), "main", "m", "main");
+        press(&mut app, &["R"]);
+        cursor_to(&mut app, "feat");
+        press(&mut app, &["y"]);
+        cursor_to(&mut app, "main");
+        press(&mut app, &["p"]);
+        assert_eq!(app.mode, Mode::Normal, "{:?}", app.status);
+        let feat = rev(d.path(), &["rev-parse", "feat"]);
+        assert_eq!(rev(d.path(), &["merge-base", "feat", "main"]), feat);
+        assert_eq!(
+            rev(d.path(), &["rev-parse", "--abbrev-ref", "HEAD"]),
+            "main"
+        );
+    }
+
+    #[test]
+    fn yank_and_rebase() {
+        let (d, mut app) = setup(&["feat"]);
+        commit_file(d.path(), "feat", "f", "feat");
+        commit_file(d.path(), "main", "m", "main");
+        press(&mut app, &["R"]);
+        cursor_to(&mut app, "feat");
+        press(&mut app, &["y"]);
+        cursor_to(&mut app, "main");
+        press(&mut app, &["P"]);
+        assert_eq!(app.mode, Mode::Normal, "{:?}", app.status);
+        let main = rev(d.path(), &["rev-parse", "main"]);
+        assert_eq!(rev(d.path(), &["merge-base", "feat", "main"]), main);
+        assert_eq!(rev(d.path(), &["rev-list", "--count", "main..feat"]), "1");
+    }
+
+    fn conflicting() -> (TempDir, App) {
+        let (d, mut app) = setup(&["feat"]);
+        commit_file(d.path(), "feat", "x", "feat");
+        commit_file(d.path(), "main", "x", "main");
+        press(&mut app, &["R"]);
+        cursor_to(&mut app, "feat");
+        press(&mut app, &["y"]);
+        cursor_to(&mut app, "main");
+        (d, app)
+    }
+
+    #[test]
+    fn merge_conflict_abort() {
+        let (d, mut app) = conflicting();
+        press(&mut app, &["p"]);
+        assert_eq!(app.mode, Mode::Conflict, "{:?}", app.status);
+        assert_eq!(app.conflict.as_ref().unwrap().files, ["x"]);
+        // Move to "abort" and select it.
+        press(&mut app, &["l", "enter"]);
+        assert_eq!(app.mode, Mode::Normal);
+        assert!(app.conflict.is_none() && app.editor_request.is_none());
+        assert!(!d.path().join(".git/MERGE_HEAD").exists());
+        assert!(rev(d.path(), &["status", "--porcelain"]).is_empty());
+    }
+
+    #[test]
+    fn rebase_conflict_resolve_opens_editor() {
+        let (d, mut app) = conflicting();
+        app.cfg.editor = "myeditor --wait".into();
+        press(&mut app, &["P"]);
+        assert_eq!(app.mode, Mode::Conflict, "{:?}", app.status);
+        press(&mut app, &["enter"]);
+        assert_eq!(app.mode, Mode::Normal);
+        let req = app.editor_request.take().unwrap();
+        assert_eq!(req.program, "myeditor");
+        assert_eq!(req.args, ["--wait", "x"]);
+        assert_eq!(
+            req.dir.canonicalize().unwrap(),
+            d.path().canonicalize().unwrap()
+        );
+        // The rebase is left in progress for the user to finish.
+        assert!(d.path().join(".git/rebase-merge").exists());
+    }
+
+    #[test]
+    fn renders_conflict_prompt() {
+        use ratatui::{Terminal, backend::TestBackend};
+        let (_d, mut app) = conflicting();
+        press(&mut app, &["p"]);
+        let mut term = Terminal::new(TestBackend::new(70, 6)).unwrap();
+        term.draw(|f| crate::ui::draw(f, &mut app)).unwrap();
+        let buf = term.backend().buffer();
+        let row = |y| (0..70).map(|x| buf[(x, y)].symbol()).collect::<String>();
+        assert!(row(0).contains("yanked: feat"), "{}", row(0));
+        assert_eq!(
+            row(4).trim_end(),
+            "Conflicts merging feat into main:  resolve   abort"
+        );
     }
 
     #[test]
