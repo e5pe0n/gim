@@ -9,8 +9,9 @@ use ratatui::{
 };
 use unicode_width::UnicodeWidthStr;
 
-use crate::app::{App, ConflictChoice, Integrate, Mode};
+use crate::app::{App, Choice, Mode};
 use crate::config::Keys;
+use crate::git::Op;
 
 pub fn draw(frame: &mut Frame, app: &mut App) {
     let [title_area, list_area, status_area, help_area] = Layout::vertical([
@@ -30,6 +31,20 @@ pub fn draw(frame: &mut Frame, app: &mut App) {
                 .fg(Color::Black)
                 .bg(Color::Magenta),
         );
+    }
+    if let Some(o) = &app.operation {
+        let badge = match o.op {
+            Op::Merge => " MERGING ",
+            Op::Rebase => " REBASING ",
+        };
+        title.push(Span::raw(" "));
+        title.push(Span::from(badge).bold().fg(Color::Black).bg(Color::Yellow));
+        title.push(Span::raw(format!(" {}", o.desc)));
+        if !o.conflicts.is_empty() {
+            title.push(
+                Span::from(format!(" ({})", conflict_count(o.conflicts.len()))).fg(Color::Red),
+            );
+        }
     }
     if let Some(y) = &app.yanked {
         title.push(Span::from(format!("  yanked: {y}")).fg(Color::Cyan));
@@ -56,7 +71,7 @@ pub fn draw(frame: &mut Frame, app: &mut App) {
             };
             Line::from(format!("{verb} {}? [y/N]", app.pending_delete.join(", "))).fg(Color::Red)
         }
-        Mode::Conflict => conflict_line(app),
+        Mode::Operation => operation_line(app),
         _ => match &app.status {
             Some(s) if s.error => Line::from(one_line(&s.text)).fg(Color::Red),
             Some(s) => Line::from(s.text.clone()).fg(Color::Green),
@@ -129,36 +144,48 @@ fn draw_list(frame: &mut Frame, app: &mut App, area: ratatui::layout::Rect) {
     frame.render_stateful_widget(List::new(items), area, &mut app.list_state);
 }
 
-fn conflict_line(app: &App) -> Line<'static> {
-    let Some(c) = &app.conflict else {
+fn conflict_count(n: usize) -> String {
+    format!("{n} conflicted file{}", if n == 1 { "" } else { "s" })
+}
+
+fn operation_line(app: &App) -> Line<'static> {
+    let Some(o) = &app.operation else {
         return Line::default();
     };
-    let text = match c.op {
-        Integrate::Merge => format!("Conflicts merging {} into {}: ", c.branch, c.target),
-        Integrate::Rebase => format!("Conflicts rebasing {} onto {}: ", c.branch, c.target),
+    let state = if o.conflicts.is_empty() {
+        "no conflicts left".to_string()
+    } else {
+        conflict_count(o.conflicts.len())
     };
-    let option = |label: &'static str, choice: ConflictChoice| {
-        let span = Span::from(format!(" {label} "));
-        if c.choice == choice {
+    let mut spans =
+        vec![
+            Span::from(format!("{}, {state}: ", o.desc)).fg(if o.conflicts.is_empty() {
+                Color::Green
+            } else {
+                Color::Red
+            }),
+        ];
+    for (i, choice) in Choice::ALL.into_iter().enumerate() {
+        if i > 0 {
+            spans.push(Span::raw(" "));
+        }
+        let span = Span::from(format!(" {} ", choice.label()));
+        spans.push(if app.choice == choice {
             span.bold().fg(Color::Black).bg(Color::Yellow)
         } else {
             span
-        }
-    };
-    Line::from(vec![
-        Span::from(text).fg(Color::Red),
-        option("resolve", ConflictChoice::Resolve),
-        Span::raw(" "),
-        option("abort", ConflictChoice::Abort),
-    ])
+        });
+    }
+    Line::from(spans)
 }
 
 fn help(app: &App) -> String {
     match app.mode {
         Mode::Rename | Mode::Create => return "enter: confirm  esc: cancel".into(),
         Mode::Confirm => return "y: confirm  any other key: cancel".into(),
-        Mode::Conflict => {
-            return "h/l: choose  enter: select  r: resolve  a: abort".into();
+        Mode::Operation => {
+            return "h/l: choose  enter: select  c: continue  r: resolve  a: abort  esc: back"
+                .into();
         }
         _ => {}
     }
@@ -173,7 +200,9 @@ fn help(app: &App) -> String {
         (&k.force_delete, "force delete"),
         (&k.yank, "yank"),
     ];
-    if app.yanked.is_some() {
+    if app.operation.is_some() {
+        parts.push((&k.operation, "continue/abort"));
+    } else if app.yanked.is_some() {
         parts.push((&k.merge, "merge yanked"));
         parts.push((&k.rebase, "rebase yanked"));
     }

@@ -147,6 +147,8 @@ pub struct KeyMap {
     pub yank: Keys,
     pub merge: Keys,
     pub rebase: Keys,
+    /// Open the continue / resolve / abort prompt for the merge / rebase in progress.
+    pub operation: Keys,
     pub reload: Keys,
     pub quit: Keys,
 }
@@ -168,6 +170,7 @@ impl Default for KeyMap {
             yank: Keys::of(&["y"]),
             merge: Keys::of(&["p"]),
             rebase: Keys::of(&["P"]),
+            operation: Keys::of(&["o"]),
             reload: Keys::of(&["R"]),
             quit: Keys::of(&["q", "ctrl+c"]),
         }
@@ -182,6 +185,9 @@ pub struct Config {
     /// Command opened on the conflicted files to resolve a merge / rebase conflict,
     /// split on whitespace (e.g. `"code"`, `"nvim -d"`).
     pub editor: String,
+    /// Stash uncommitted changes around a merge / rebase that needs the working tree,
+    /// instead of refusing to start.
+    pub autostash: bool,
     pub keys: KeyMap,
 }
 
@@ -190,6 +196,7 @@ impl Default for Config {
         Config {
             confirm_delete: true,
             editor: "code".into(),
+            autostash: false,
             keys: KeyMap::default(),
         }
     }

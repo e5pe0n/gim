@@ -4,6 +4,7 @@ mod app;
 mod config;
 mod git;
 mod input;
+mod ops;
 mod ui;
 
 use std::{
