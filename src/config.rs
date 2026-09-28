@@ -188,6 +188,8 @@ pub struct Config {
     /// Stash uncommitted changes around a merge / rebase that needs the working tree,
     /// instead of refusing to start.
     pub autostash: bool,
+    /// Quit after checking out a branch (`checkout` / `checkout_new`).
+    pub quit_on_checkout: bool,
     pub keys: KeyMap,
 }
 
@@ -197,6 +199,7 @@ impl Default for Config {
             confirm_delete: true,
             editor: "code".into(),
             autostash: false,
+            quit_on_checkout: true,
             keys: KeyMap::default(),
         }
     }
@@ -238,6 +241,7 @@ mod tests {
     fn empty_config_uses_defaults() {
         let cfg = parse("").unwrap();
         assert!(cfg.confirm_delete);
+        assert!(cfg.quit_on_checkout);
         assert_eq!(cfg.editor, "code");
         assert_eq!(cfg.keys.down, Keys::of(&["j", "down"]));
     }

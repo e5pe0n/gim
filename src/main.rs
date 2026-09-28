@@ -54,6 +54,9 @@ fn run() -> Result<(), String> {
     let mut terminal = ratatui::init();
     let result = event_loop(&mut terminal, &mut app);
     ratatui::restore();
+    if let Some(msg) = &app.exit_message {
+        println!("{msg}");
+    }
     result.map_err(|e| e.to_string())
 }
 
