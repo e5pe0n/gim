@@ -21,7 +21,7 @@ Run `gim` inside a git repository.
 | `d`            | delete branch(es) (`git branch -d`)      |
 | `D`            | force delete branch(es) (`git branch -D`) |
 | `r`            | rename branch on the cursor              |
-| `enter`        | checkout branch on the cursor            |
+| `enter`        | checkout branch on the cursor (and quit, see `quit_on_checkout`) |
 | `b`            | create a branch from the cursor branch and check it out (`git checkout -b`) |
 | `y`            | yank the branch on the cursor            |
 | `p`            | merge the yanked branch into the cursor branch |
@@ -69,6 +69,9 @@ editor = "code"
 
 # Stash uncommitted changes around a merge / rebase instead of refusing to start.
 autostash = false
+
+# Quit after checking out a branch (`enter` / `b`).
+quit_on_checkout = true
 
 [keys]
 up           = ["k", "up"]

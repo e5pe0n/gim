@@ -85,6 +85,8 @@ pub struct App {
     pub status: Option<Status>,
     pub list_state: ListState,
     pub quit: bool,
+    /// Printed after the terminal is restored, when quitting after a checkout.
+    pub exit_message: Option<String>,
 }
 
 impl App {
@@ -108,6 +110,7 @@ impl App {
             status: None,
             list_state: ListState::default(),
             quit: false,
+            exit_message: None,
         };
         app.reload()?;
         if let Some(i) = app.branches.iter().position(|b| b.current) {
@@ -123,6 +126,15 @@ impl App {
         self.anchor = self.anchor.min(last);
         self.operation = ops::in_progress(&self.repo)?;
         Ok(())
+    }
+
+    /// Report a successful checkout, quitting if configured to.
+    fn checked_out(&mut self, text: String) {
+        if self.cfg.quit_on_checkout {
+            self.quit = true;
+            self.exit_message = Some(text.clone());
+        }
+        self.set_status(text, false);
     }
 
     fn set_status(&mut self, text: impl Into<String>, error: bool) {
@@ -390,7 +402,7 @@ impl App {
         };
         self.mode = Mode::Normal;
         match self.repo.checkout(&name).and_then(|_| self.reload()) {
-            Ok(()) => self.set_status(format!("switched to {name}"), false),
+            Ok(()) => self.checked_out(format!("switched to {name}")),
             Err(e) => self.set_status(e, true),
         }
     }
@@ -464,7 +476,11 @@ impl App {
                 if let Some(i) = self.branches.iter().position(|b| b.name == new) {
                     self.cursor = i;
                 }
-                self.set_status(done, false);
+                if mode == Mode::Rename {
+                    self.set_status(done, false);
+                } else {
+                    self.checked_out(done);
+                }
             }
             _ => self.input.handle(&ev),
         }
@@ -606,8 +622,21 @@ mod tests {
         press(&mut app, &["g", "r", "ctrl+u", "z", "enter"]);
         assert_eq!(names(&app), ["main", "z"]);
         assert_eq!(app.branches[app.cursor].name, "z");
+        assert!(!app.quit);
         press(&mut app, &["enter"]);
         assert!(app.branches[app.cursor].current, "{:?}", app.status);
+        assert!(app.quit);
+        assert_eq!(app.exit_message.as_deref(), Some("switched to z"));
+    }
+
+    #[test]
+    fn checkout_stays_open_when_configured() {
+        let (_d, mut app) = setup(&["a"]);
+        app.cfg.quit_on_checkout = false;
+        press(&mut app, &["g", "enter"]);
+        assert!(app.branches[app.cursor].current, "{:?}", app.status);
+        assert!(!app.quit);
+        assert_eq!(app.exit_message, None);
     }
 
     #[test]
@@ -626,6 +655,7 @@ mod tests {
         let cur = &app.branches[app.cursor];
         assert!(cur.current && cur.name == "feat", "{:?}", app.status);
         assert_eq!(cur.subject, "on base");
+        assert!(app.quit);
     }
 
     fn head(dir: &std::path::Path) -> String {
