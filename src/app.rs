@@ -456,11 +456,7 @@ impl App {
             _ => {
                 let before = self.filter.value();
                 self.filter.handle(&ev);
-                if ev.code == KeyCode::Backspace && !self.filtering() {
-                    // Backspacing the query away leaves search, like vim's `/`.
-                    self.clear_filter();
-                    self.mode = Mode::Normal;
-                } else if self.filter.value() != before {
+                if self.filter.value() != before {
                     self.apply_filter();
                     self.cursor = 0;
                 }
@@ -610,7 +606,6 @@ mod tests {
                 "esc" => KeyEvent::new(KeyCode::Esc, KeyModifiers::NONE),
                 "enter" => KeyEvent::new(KeyCode::Enter, KeyModifiers::NONE),
                 "ctrl+u" => KeyEvent::new(KeyCode::Char('u'), KeyModifiers::CONTROL),
-                "backspace" => KeyEvent::new(KeyCode::Backspace, KeyModifiers::NONE),
                 s => {
                     let c = s.chars().next().unwrap();
                     let mods = if c.is_uppercase() {
@@ -713,23 +708,6 @@ mod tests {
         assert_eq!((app.mode, names(&app).len()), (Mode::Normal, 2));
         press(&mut app, &["/", "esc"]);
         assert_eq!((app.mode, shown(&app)), (Mode::Normal, vec!["a", "main"]));
-    }
-
-    #[test]
-    fn search_backspace_to_empty_exits() {
-        let (_d, mut app) = setup(&["a", "zeta"]);
-        press(&mut app, &["/", "z", "t", "backspace"]);
-        assert_eq!((app.mode, shown(&app)), (Mode::Search, vec!["zeta"]));
-        press(&mut app, &["backspace"]);
-        assert_eq!(app.mode, Mode::Normal);
-        assert_eq!(shown(&app), ["a", "main", "zeta"]);
-        assert_eq!(app.branches[app.cursor].name, "zeta");
-        // Also from an empty prompt.
-        press(&mut app, &["/", "backspace"]);
-        assert_eq!(app.mode, Mode::Normal);
-        // Other ways of emptying it stay in search.
-        press(&mut app, &["/", "z", "ctrl+u"]);
-        assert_eq!(app.mode, Mode::Search);
     }
 
     #[test]

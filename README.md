@@ -39,8 +39,7 @@ Run `gim` inside a git repository.
 starts (after `/`, `-`, `_`, `.`) and consecutive runs rank first. Matching is case-insensitive
 unless the query has an upper-case letter. While typing, `up`/`down` (or `ctrl+p`/`ctrl+n`) move
 the cursor; `enter` keeps the filter and returns to the list, where every key works on the matching
-branches (e.g. `/`, `log`, `enter`, `enter` checks out the best match for "log"); `esc` clears it, as does
-backspacing the query away.
+branches (e.g. `/`, `log`, `enter`, `enter` checks out the best match for "log"); `esc` clears it.
 
 ### Merge and rebase
 
