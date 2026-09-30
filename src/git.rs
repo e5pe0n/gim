@@ -8,6 +8,18 @@ pub struct Branch {
     pub current: bool,
     pub hash: String,
     pub subject: String,
+    /// For a remote-tracking branch (`name` is e.g. `origin/feat`), the remote (`origin`).
+    pub remote: Option<String>,
+}
+
+impl Branch {
+    /// Name of the local branch a remote-tracking branch is checked out as (`feat`).
+    pub fn local_name(&self) -> &str {
+        match &self.remote {
+            Some(r) => &self.name[r.len() + 1..],
+            None => &self.name,
+        }
+    }
 }
 
 /// A merge or rebase that can stop on conflicts.
@@ -65,25 +77,51 @@ impl Repo {
         }
     }
 
-    /// Local branches, sorted by name.
-    pub fn list_branches(&self) -> Result<Vec<Branch>, String> {
-        let out = self.run(&[
+    /// Local branches sorted by name, then (with `remotes`) remote-tracking branches.
+    pub fn list_branches(&self, remotes: bool) -> Result<Vec<Branch>, String> {
+        let mut args = vec![
             "for-each-ref",
-            "--format=%(HEAD)%09%(refname:short)%09%(objectname:short)%09%(contents:subject)",
+            "--format=%(HEAD)%09%(refname)%09%(symref)%09%(objectname:short)%09%(contents:subject)",
             "refs/heads",
-        ])?;
+        ];
+        let remote_names: Vec<String> = if remotes {
+            args.push("refs/remotes");
+            self.run(&["remote"])?.lines().map(String::from).collect()
+        } else {
+            Vec::new()
+        };
+        let out = self.run(&args)?;
         Ok(out
             .lines()
-            .filter(|l| !l.is_empty())
-            .map(|line| {
-                let mut f = line.splitn(4, '\t');
+            .filter_map(|line| {
+                let mut f = line.splitn(5, '\t');
                 let mut next = || f.next().unwrap_or("").to_string();
-                Branch {
-                    current: next() == "*",
-                    name: next(),
+                let (current, refname, symref) = (next() == "*", next(), next());
+                // Skip `origin/HEAD` and the like.
+                if !symref.is_empty() {
+                    return None;
+                }
+                let (name, remote) = match refname.strip_prefix("refs/remotes/") {
+                    Some(name) => {
+                        // Remote names can contain '/': take the longest that fits.
+                        let remote = remote_names
+                            .iter()
+                            .filter(|r| {
+                                name.strip_prefix(r.as_str())
+                                    .is_some_and(|rest| rest.len() > 1 && rest.starts_with('/'))
+                            })
+                            .max_by_key(|r| r.len())?;
+                        (name.to_string(), Some(remote.clone()))
+                    }
+                    None => (refname.strip_prefix("refs/heads/")?.to_string(), None),
+                };
+                Some(Branch {
+                    current,
+                    name,
                     hash: next(),
                     subject: next(),
-                }
+                    remote,
+                })
             })
             .collect())
     }
@@ -102,6 +140,12 @@ impl Repo {
     /// `git checkout -b <name> <start>`.
     pub fn checkout_new(&self, name: &str, start: &str) -> Result<(), String> {
         self.run(&["checkout", "-b", name, start, "--"]).map(|_| ())
+    }
+
+    /// `git checkout --track -b <name> <remote_branch>`.
+    pub fn checkout_track(&self, name: &str, remote_branch: &str) -> Result<(), String> {
+        self.run(&["checkout", "--track", "-b", name, remote_branch, "--"])
+            .map(|_| ())
     }
 
     pub fn checkout(&self, name: &str) -> Result<(), String> {

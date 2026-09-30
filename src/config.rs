@@ -193,6 +193,8 @@ pub struct Config {
     pub autostash: bool,
     /// Quit after checking out a branch (`checkout` / `checkout_new`).
     pub quit_on_checkout: bool,
+    /// List remote-tracking branches after the local ones.
+    pub remotes: bool,
     pub keys: KeyMap,
 }
 
@@ -203,6 +205,7 @@ impl Default for Config {
             editor: "code".into(),
             autostash: false,
             quit_on_checkout: true,
+            remotes: true,
             keys: KeyMap::default(),
         }
     }

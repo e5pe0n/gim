@@ -24,7 +24,7 @@ Run `gim` inside a git repository.
 | `d`            | delete branch(es) (`git branch -d`)      |
 | `D`            | force delete branch(es) (`git branch -D`) |
 | `r`            | rename branch on the cursor              |
-| `enter`        | checkout branch on the cursor (and quit, see `quit_on_checkout`) |
+| `enter`        | checkout branch on the cursor (and quit, see `quit_on_checkout`); on a remote branch, check out a local branch tracking it |
 | `b`            | create a branch from the cursor branch and check it out (`git checkout -b`) |
 | `y`            | yank the branch on the cursor            |
 | `p`            | merge the yanked branch into the cursor branch |
@@ -34,6 +34,14 @@ Run `gim` inside a git repository.
 | `q`            | quit                                     |
 
 `d` / `D` act on the visual selection when one is active, otherwise on the cursor branch.
+
+### Remote branches
+
+Remote-tracking branches (`origin/feat`, in red) are listed after the local ones. `enter` on one
+checks out the local branch of the same name, creating it to track the remote branch
+(`git checkout --track`) if it doesn't exist yet. `b` branches off it, and it can be yanked and
+merged into a local branch; deleting, renaming, merging into or rebasing a remote branch is refused.
+Set `remotes = false` to list local branches only.
 
 ### Search
 
@@ -84,6 +92,9 @@ autostash = false
 
 # Quit after checking out a branch (`enter` / `b`).
 quit_on_checkout = true
+
+# List remote-tracking branches after the local ones.
+remotes = true
 
 [keys]
 up           = ["k", "up"]
