@@ -2,6 +2,8 @@
 
 A TUI for managing git branches.
 
+![gim demo](assets/demo.gif)
+
 ## Install
 
 ```sh
