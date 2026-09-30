@@ -147,6 +147,8 @@ fn draw_list(frame: &mut Frame, app: &mut App, area: ratatui::layout::Rect) {
             }
             let name_style = if b.current {
                 full.fg(Color::Green).bold()
+            } else if b.remote.is_some() {
+                full.fg(Color::Red)
             } else {
                 full
             };

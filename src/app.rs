@@ -133,7 +133,7 @@ impl App {
     }
 
     fn reload(&mut self) -> Result<(), String> {
-        self.all_branches = self.repo.list_branches()?;
+        self.all_branches = self.repo.list_branches(self.cfg.remotes)?;
         self.apply_filter();
         let last = self.branches.len().saturating_sub(1);
         self.cursor = self.cursor.min(last);
@@ -206,15 +206,18 @@ impl App {
         }
     }
 
-    fn selected_names(&self) -> Vec<String> {
+    fn selected(&self) -> &[Branch] {
         if self.branches.is_empty() {
-            return Vec::new();
+            return &[];
         }
         let (lo, hi) = self.selection();
-        self.branches[lo..=hi]
+        &self.branches[lo..=hi]
+    }
+
+    fn is_remote(&self, name: &str) -> bool {
+        self.all_branches
             .iter()
-            .map(|b| b.name.clone())
-            .collect()
+            .any(|b| b.name == name && b.remote.is_some())
     }
 
     pub fn handle_key(&mut self, ev: KeyEvent) {
@@ -311,6 +314,17 @@ impl App {
         if branch == target {
             self.set_status(format!("{branch} is the yanked branch itself"), true);
             return;
+        }
+        match op {
+            Op::Merge if self.is_remote(&target) => {
+                self.set_status(format!("can't merge into remote branch {target}"), true);
+                return;
+            }
+            Op::Rebase if self.is_remote(&branch) => {
+                self.set_status(format!("can't rebase remote branch {branch}"), true);
+                return;
+            }
+            _ => {}
         }
         let result = ops::start(&self.repo, op, &branch, &target, self.cfg.autostash);
         self.after_step(result);
@@ -467,9 +481,14 @@ impl App {
     }
 
     fn start_input(&mut self, mode: Mode) {
-        let Some(name) = self.branches.get(self.cursor).map(|b| b.name.clone()) else {
+        let Some(b) = self.branches.get(self.cursor) else {
             return;
         };
+        let name = b.name.clone();
+        if mode == Mode::Rename && b.remote.is_some() {
+            self.set_status(format!("can't rename remote branch {name}"), true);
+            return;
+        }
         self.input
             .set(if mode == Mode::Rename { &name } else { "" });
         self.input_target = name;
@@ -478,18 +497,43 @@ impl App {
     }
 
     fn checkout(&mut self) {
-        let Some(name) = self.branches.get(self.cursor).map(|b| b.name.clone()) else {
+        let Some(b) = self.branches.get(self.cursor) else {
             return;
         };
         self.mode = Mode::Normal;
-        match self.repo.checkout(&name).and_then(|_| self.reload()) {
-            Ok(()) => self.checked_out(format!("switched to {name}")),
+        let (name, local) = (b.name.clone(), b.local_name().to_string());
+        let (result, done) = if b.remote.is_none() {
+            (self.repo.checkout(&name), format!("switched to {name}"))
+        } else if self
+            .all_branches
+            .iter()
+            .any(|b| b.remote.is_none() && b.name == local)
+        {
+            // Like `git switch`: a local branch of that name wins.
+            (self.repo.checkout(&local), format!("switched to {local}"))
+        } else {
+            (
+                self.repo.checkout_track(&local, &name),
+                format!("switched to new branch {local} tracking {name}"),
+            )
+        };
+        match result.and_then(|_| self.reload()) {
+            Ok(()) => {
+                if let Some(i) = self.branches.iter().position(|b| b.current) {
+                    self.cursor = i;
+                }
+                self.checked_out(done);
+            }
             Err(e) => self.set_status(e, true),
         }
     }
 
     fn start_delete(&mut self, force: bool) {
-        let names = self.selected_names();
+        if let Some(b) = self.selected().iter().find(|b| b.remote.is_some()) {
+            self.set_status(format!("can't delete remote branch {}", b.name), true);
+            return;
+        }
+        let names: Vec<String> = self.selected().iter().map(|b| b.name.clone()).collect();
         if names.is_empty() {
             return;
         }
@@ -647,7 +691,7 @@ mod tests {
 
     fn names(app: &App) -> Vec<String> {
         app.repo
-            .list_branches()
+            .list_branches(false)
             .unwrap()
             .into_iter()
             .map(|b| b.name)
@@ -723,6 +767,74 @@ mod tests {
         assert_eq!((app.mode, shown(&app).len()), (Mode::Search, 3));
         press(&mut app, &["backspace"]);
         assert_eq!(app.mode, Mode::Normal);
+    }
+
+    /// A clone of a repo with branches main and `branches`; only main is local.
+    fn setup_clone(branches: &[&str]) -> (TempDir, TempDir, App) {
+        let (up, _) = setup(branches);
+        let dir = tempfile::tempdir().unwrap();
+        git(
+            dir.path(),
+            &["clone", "-q", up.path().to_str().unwrap(), "."],
+        );
+        let app = App::new(Repo::new(dir.path()), Config::default()).unwrap();
+        (up, dir, app)
+    }
+
+    #[test]
+    fn lists_remote_branches() {
+        let (_u, _d, mut app) = setup_clone(&["feat"]);
+        // origin/HEAD is skipped.
+        assert_eq!(shown(&app), ["main", "origin/feat", "origin/main"]);
+        assert_eq!(app.branches[1].remote.as_deref(), Some("origin"));
+        assert_eq!(app.branches[1].local_name(), "feat");
+        app.cfg.remotes = false;
+        press(&mut app, &["R"]);
+        assert_eq!(shown(&app), ["main"]);
+    }
+
+    #[test]
+    fn checkout_remote_branch_tracks_it() {
+        let (_u, d, mut app) = setup_clone(&["feat"]);
+        cursor_to(&mut app, "origin/feat");
+        press(&mut app, &["enter"]);
+        assert!(!is_error(&app), "{:?}", app.status);
+        assert_eq!(
+            app.exit_message.as_deref(),
+            Some("switched to new branch feat tracking origin/feat")
+        );
+        assert_eq!(head(d.path()), "feat");
+        assert_eq!(
+            rev(d.path(), &["rev-parse", "--abbrev-ref", "feat@{upstream}"]),
+            "origin/feat"
+        );
+        assert_eq!(app.branches[app.cursor].name, "feat");
+
+        // A local branch of the same name is checked out instead.
+        app.cfg.quit_on_checkout = false;
+        cursor_to(&mut app, "origin/main");
+        press(&mut app, &["enter"]);
+        assert_eq!(app.status.as_ref().unwrap().text, "switched to main");
+        assert_eq!(head(d.path()), "main");
+    }
+
+    #[test]
+    fn remote_branches_refuse_local_only_actions() {
+        let (_u, _d, mut app) = setup_clone(&["feat"]);
+        cursor_to(&mut app, "origin/feat");
+        press(&mut app, &["d"]);
+        assert!(is_error(&app) && app.mode == Mode::Normal);
+        press(&mut app, &["g", "v", "j", "D"]);
+        assert!(is_error(&app) && app.mode == Mode::Visual);
+        press(&mut app, &["esc", "r"]);
+        assert!(is_error(&app) && app.mode == Mode::Normal);
+        // Yanked remote branches can be merged, but not rebased; nothing merges into one.
+        press(&mut app, &["y", "k", "P"]);
+        assert!(is_error(&app), "{:?}", app.status);
+        press(&mut app, &["p"]);
+        assert!(!is_error(&app), "{:?}", app.status);
+        press(&mut app, &["y", "G", "p"]);
+        assert!(is_error(&app), "{:?}", app.status);
     }
 
     #[test]
