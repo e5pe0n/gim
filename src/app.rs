@@ -449,6 +449,8 @@ impl App {
                 self.mode = Mode::Normal;
             }
             KeyCode::Enter => self.mode = Mode::Normal,
+            // Backspace on an empty query leaves search, like vim's `/`.
+            KeyCode::Backspace if !self.filtering() => self.mode = Mode::Normal,
             KeyCode::Up | KeyCode::BackTab => self.cursor = self.cursor.saturating_sub(1),
             KeyCode::Char('p' | 'k') if ctrl => self.cursor = self.cursor.saturating_sub(1),
             KeyCode::Down | KeyCode::Tab => self.cursor = (self.cursor + 1).min(last),
@@ -606,6 +608,7 @@ mod tests {
                 "esc" => KeyEvent::new(KeyCode::Esc, KeyModifiers::NONE),
                 "enter" => KeyEvent::new(KeyCode::Enter, KeyModifiers::NONE),
                 "ctrl+u" => KeyEvent::new(KeyCode::Char('u'), KeyModifiers::CONTROL),
+                "backspace" => KeyEvent::new(KeyCode::Backspace, KeyModifiers::NONE),
                 s => {
                     let c = s.chars().next().unwrap();
                     let mods = if c.is_uppercase() {
@@ -708,6 +711,18 @@ mod tests {
         assert_eq!((app.mode, names(&app).len()), (Mode::Normal, 2));
         press(&mut app, &["/", "esc"]);
         assert_eq!((app.mode, shown(&app)), (Mode::Normal, vec!["a", "main"]));
+    }
+
+    #[test]
+    fn search_backspace_on_empty_query_exits() {
+        let (_d, mut app) = setup(&["a", "zeta"]);
+        press(&mut app, &["/", "backspace"]);
+        assert_eq!(app.mode, Mode::Normal);
+        // Deleting the last char stays in search, showing everything.
+        press(&mut app, &["/", "z", "backspace"]);
+        assert_eq!((app.mode, shown(&app).len()), (Mode::Search, 3));
+        press(&mut app, &["backspace"]);
+        assert_eq!(app.mode, Mode::Normal);
     }
 
     #[test]
