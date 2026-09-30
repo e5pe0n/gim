@@ -17,7 +17,8 @@ Run `gim` inside a git repository.
 | `j` / `k`      | move cursor down / up                    |
 | `g` / `G`      | jump to top / bottom                     |
 | `v`            | start visual selection (press again to end) |
-| `esc`          | cancel selection                         |
+| `esc`          | cancel selection / clear the search filter |
+| `/`            | fuzzy-search branches                    |
 | `d`            | delete branch(es) (`git branch -d`)      |
 | `D`            | force delete branch(es) (`git branch -D`) |
 | `r`            | rename branch on the cursor              |
@@ -31,6 +32,14 @@ Run `gim` inside a git repository.
 | `q`            | quit                                     |
 
 `d` / `D` act on the visual selection when one is active, otherwise on the cursor branch.
+
+### Search
+
+`/` filters the list as you type, fzf-style: the letters must appear in order, and matches at word
+starts (after `/`, `-`, `_`, `.`) and consecutive runs rank first. Matching is case-insensitive
+unless the query has an upper-case letter. While typing, `up`/`down` (or `ctrl+p`/`ctrl+n`) move
+the cursor; `enter` keeps the filter and returns to the list, where every key works on the matching
+branches (e.g. `/`, `log`, `enter`, `enter` checks out the best match for "log"); `esc` clears it.
 
 ### Merge and rebase
 
@@ -89,6 +98,7 @@ yank         = "y"
 merge        = "p"
 rebase       = "P"
 operation    = "o"
+search       = "/"
 reload       = "R"
 quit         = ["q", "ctrl+c"]
 ```

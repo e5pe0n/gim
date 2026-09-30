@@ -46,6 +46,9 @@ pub fn draw(frame: &mut Frame, app: &mut App) {
             );
         }
     }
+    if app.filtering() && app.mode != Mode::Search {
+        title.push(Span::from(format!("  /{}", app.filter.value())).fg(Color::Magenta));
+    }
     if let Some(y) = &app.yanked {
         title.push(Span::from(format!("  yanked: {y}")).fg(Color::Cyan));
     }
@@ -56,13 +59,18 @@ pub fn draw(frame: &mut Frame, app: &mut App) {
     let prompt = match app.mode {
         Mode::Rename => format!("rename {} to: ", app.input_target),
         Mode::Create => format!("new branch from {}: ", app.input_target),
+        Mode::Search => "/".into(),
         _ => String::new(),
     };
+    let input = if app.mode == Mode::Search {
+        &app.filter
+    } else {
+        &app.input
+    };
     let status = match app.mode {
-        Mode::Rename | Mode::Create => Line::from(vec![
-            Span::raw(prompt.as_str()),
-            Span::raw(app.input.value()),
-        ]),
+        Mode::Rename | Mode::Create | Mode::Search => {
+            Line::from(vec![Span::raw(prompt.as_str()), Span::raw(input.value())])
+        }
         Mode::Confirm => {
             let verb = if app.pending_force {
                 "Force delete"
@@ -79,8 +87,8 @@ pub fn draw(frame: &mut Frame, app: &mut App) {
         },
     };
     frame.render_widget(Paragraph::new(status), status_area);
-    if matches!(app.mode, Mode::Rename | Mode::Create) {
-        let before: String = app.input.value().chars().take(app.input.cursor).collect();
+    if matches!(app.mode, Mode::Rename | Mode::Create | Mode::Search) {
+        let before: String = input.value().chars().take(input.cursor).collect();
         let x = status_area.x + (prompt.width() + before.width()) as u16;
         frame.set_cursor_position(Position::new(
             x.min(status_area.right().saturating_sub(1)),
@@ -93,7 +101,12 @@ pub fn draw(frame: &mut Frame, app: &mut App) {
 
 fn draw_list(frame: &mut Frame, app: &mut App, area: ratatui::layout::Rect) {
     if app.branches.is_empty() {
-        frame.render_widget(Line::from("  (no branches)").fg(Color::DarkGray), area);
+        let text = if app.filtering() {
+            "  (no matching branches)"
+        } else {
+            "  (no branches)"
+        };
+        frame.render_widget(Line::from(text).fg(Color::DarkGray), area);
         return;
     }
     let name_width = app
@@ -112,36 +125,71 @@ fn draw_list(frame: &mut Frame, app: &mut App, area: ratatui::layout::Rect) {
         .enumerate()
         .map(|(i, b)| {
             let marker = if b.current { "* " } else { "  " };
-            let name = format!("{:<name_width$}", b.name);
+            let pad = " ".repeat(name_width - b.name.width());
+            let positions = app.matches.get(i).map(Vec::as_slice).unwrap_or_default();
             let highlighted = i == app.cursor || (visual && (lo..=hi).contains(&i));
             if highlighted {
-                // Plain text so the row highlight applies uniformly.
-                let text = format!("{marker}{name}  {}  {}", b.hash, b.subject);
+                // Unstyled apart from matches so the row highlight applies uniformly.
+                let mut spans = vec![Span::raw(marker)];
+                spans.extend(name_spans(
+                    &b.name,
+                    positions,
+                    full,
+                    full.bold().underlined(),
+                ));
+                spans.push(Span::raw(format!("{pad}  {}  {}", b.hash, b.subject)));
                 let style = if i == app.cursor {
                     full.add_modifier(Modifier::REVERSED)
                 } else {
                     full.bg(Color::Indexed(24)).fg(Color::White)
                 };
-                return ListItem::new(Line::from(text)).style(style);
+                return ListItem::new(Line::from(spans)).style(style);
             }
             let name_style = if b.current {
                 full.fg(Color::Green).bold()
             } else {
                 full
             };
-            ListItem::new(Line::from(vec![
-                Span::raw(marker),
-                Span::styled(name, name_style),
+            let mut spans = vec![Span::raw(marker)];
+            spans.extend(name_spans(
+                &b.name,
+                positions,
+                name_style,
+                full.fg(Color::Magenta).bold(),
+            ));
+            spans.extend([
+                Span::raw(pad),
                 Span::raw("  "),
                 Span::styled(b.hash.clone(), full.fg(Color::Yellow)),
                 Span::raw("  "),
                 Span::styled(b.subject.clone(), full.fg(Color::DarkGray)),
-            ]))
+            ]);
+            ListItem::new(Line::from(spans))
         })
         .collect();
 
     app.list_state.select(Some(app.cursor));
     frame.render_stateful_widget(List::new(items), area, &mut app.list_state);
+}
+
+/// `name` split into runs, with the chars at `positions` in `matched` style.
+fn name_spans(name: &str, positions: &[usize], plain: Style, matched: Style) -> Vec<Span<'static>> {
+    let mut spans: Vec<Span> = Vec::new();
+    let mut run = String::new();
+    let mut run_matched = false;
+    for (i, c) in name.chars().enumerate() {
+        let m = positions.contains(&i);
+        if m != run_matched && !run.is_empty() {
+            let style = if run_matched { matched } else { plain };
+            spans.push(Span::styled(std::mem::take(&mut run), style));
+        }
+        run_matched = m;
+        run.push(c);
+    }
+    if !run.is_empty() {
+        spans.push(Span::styled(run, if run_matched { matched } else { plain }));
+    }
+    spans
 }
 
 fn conflict_count(n: usize) -> String {
@@ -183,6 +231,9 @@ fn help(app: &App) -> String {
     match app.mode {
         Mode::Rename | Mode::Create => return "enter: confirm  esc: cancel".into(),
         Mode::Confirm => return "y: confirm  any other key: cancel".into(),
+        Mode::Search => {
+            return "type to filter  up/down: move  enter: done  esc: clear".into();
+        }
         Mode::Operation => {
             return "h/l: choose  enter: select  c: continue  r: resolve  a: abort  esc: back"
                 .into();
@@ -199,6 +250,7 @@ fn help(app: &App) -> String {
         (&k.delete, "delete"),
         (&k.force_delete, "force delete"),
         (&k.yank, "yank"),
+        (&k.search, "search"),
     ];
     if app.operation.is_some() {
         parts.push((&k.operation, "continue/abort"));
@@ -210,6 +262,9 @@ fn help(app: &App) -> String {
         parts.push((&k.cancel, "cancel"));
     } else {
         parts.push((&k.visual, "visual"));
+        if app.filtering() {
+            parts.push((&k.cancel, "clear filter"));
+        }
     }
     parts.push((&k.quit, "quit"));
     parts

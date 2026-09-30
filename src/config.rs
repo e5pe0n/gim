@@ -149,6 +149,8 @@ pub struct KeyMap {
     pub rebase: Keys,
     /// Open the continue / resolve / abort prompt for the merge / rebase in progress.
     pub operation: Keys,
+    /// Fuzzy-filter the branch list.
+    pub search: Keys,
     pub reload: Keys,
     pub quit: Keys,
 }
@@ -171,6 +173,7 @@ impl Default for KeyMap {
             merge: Keys::of(&["p"]),
             rebase: Keys::of(&["P"]),
             operation: Keys::of(&["o"]),
+            search: Keys::of(&["/"]),
             reload: Keys::of(&["R"]),
             quit: Keys::of(&["q", "ctrl+c"]),
         }
