@@ -253,6 +253,7 @@ fn help(app: &App) -> String {
         (&k.force_delete, "force delete"),
         (&k.yank, "yank"),
         (&k.search, "search"),
+        (&k.fetch, "fetch"),
     ];
     if app.operation.is_some() {
         parts.push((&k.operation, "continue/abort"));

@@ -30,6 +30,7 @@ Run `gim` inside a git repository.
 | `p`            | merge the yanked branch into the cursor branch |
 | `P`            | rebase the yanked branch onto the cursor branch |
 | `o`            | continue / resolve / abort the merge or rebase in progress |
+| `f`            | fetch all remotes (`git fetch --all --prune`) and reload |
 | `R`            | reload branch list                       |
 | `q`            | quit                                     |
 
@@ -113,6 +114,7 @@ merge        = "p"
 rebase       = "P"
 operation    = "o"
 search       = "/"
+fetch        = "f"
 reload       = "R"
 quit         = ["q", "ctrl+c"]
 ```

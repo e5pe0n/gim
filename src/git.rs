@@ -148,6 +148,15 @@ impl Repo {
             .map(|_| ())
     }
 
+    /// `git fetch --all --prune`, never prompting for credentials (the TUI owns the terminal).
+    pub fn fetch(&self) -> Result<(), String> {
+        self.run_env(
+            &["fetch", "--all", "--prune"],
+            &[("GIT_TERMINAL_PROMPT", "0")],
+        )
+        .map(|_| ())
+    }
+
     pub fn checkout(&self, name: &str) -> Result<(), String> {
         self.run(&["checkout", name, "--"]).map(|_| ())
     }
