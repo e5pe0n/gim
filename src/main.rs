@@ -2,6 +2,7 @@
 
 mod app;
 mod config;
+mod fuzzy;
 mod git;
 mod input;
 mod ops;

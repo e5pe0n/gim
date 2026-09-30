@@ -6,6 +6,7 @@ use ratatui::crossterm::event::{KeyCode, KeyEvent, KeyModifiers};
 use ratatui::widgets::ListState;
 
 use crate::config::Config;
+use crate::fuzzy;
 use crate::git::{Branch, Op, Repo};
 use crate::input::LineInput;
 use crate::ops::{self, Operation, Outcome};
@@ -18,6 +19,8 @@ pub enum Mode {
     /// Prompting for a new branch name to `checkout -b` from the cursor branch.
     Create,
     Confirm,
+    /// Typing a fuzzy filter for the branch list.
+    Search,
     /// Choosing what to do with the merge / rebase in progress.
     Operation,
 }
@@ -64,7 +67,14 @@ pub struct Status {
 pub struct App {
     repo: Repo,
     pub cfg: Config,
+    /// Every branch, in git's order.
+    all_branches: Vec<Branch>,
+    /// Branches shown: those matching `filter`, best match first.
     pub branches: Vec<Branch>,
+    /// Matched char positions in each shown branch name, for highlighting.
+    pub matches: Vec<Vec<usize>>,
+    /// Fuzzy filter; empty shows every branch.
+    pub filter: LineInput,
     pub cursor: usize,
     /// Visual-mode anchor.
     pub anchor: usize,
@@ -94,7 +104,10 @@ impl App {
         let mut app = App {
             repo,
             cfg,
+            all_branches: Vec::new(),
             branches: Vec::new(),
+            matches: Vec::new(),
+            filter: LineInput::default(),
             cursor: 0,
             anchor: 0,
             mode: Mode::Normal,
@@ -120,12 +133,47 @@ impl App {
     }
 
     fn reload(&mut self) -> Result<(), String> {
-        self.branches = self.repo.list_branches()?;
+        self.all_branches = self.repo.list_branches()?;
+        self.apply_filter();
         let last = self.branches.len().saturating_sub(1);
         self.cursor = self.cursor.min(last);
         self.anchor = self.anchor.min(last);
         self.operation = ops::in_progress(&self.repo)?;
         Ok(())
+    }
+
+    /// Recompute the shown branches from `filter`.
+    fn apply_filter(&mut self) {
+        let query = self.filter.value();
+        let mut hits: Vec<(i32, usize, Vec<usize>)> = self
+            .all_branches
+            .iter()
+            .enumerate()
+            .filter_map(|(i, b)| {
+                fuzzy::fuzzy_match(&query, &b.name).map(|m| (m.score, i, m.positions))
+            })
+            .collect();
+        // Stable, so equal scores keep git's order.
+        hits.sort_by_key(|&(score, _, _)| std::cmp::Reverse(score));
+        self.branches = hits
+            .iter()
+            .map(|(_, i, _)| self.all_branches[*i].clone())
+            .collect();
+        self.matches = hits.into_iter().map(|(_, _, p)| p).collect();
+    }
+
+    pub fn filtering(&self) -> bool {
+        !self.filter.value().is_empty()
+    }
+
+    fn clear_filter(&mut self) {
+        // Keep the cursor on the same branch in the full list.
+        let name = self.branches.get(self.cursor).map(|b| b.name.clone());
+        self.filter.set("");
+        self.apply_filter();
+        if let Some(i) = name.and_then(|n| self.branches.iter().position(|b| b.name == n)) {
+            self.cursor = i;
+        }
     }
 
     /// Report a successful checkout, quitting if configured to.
@@ -173,6 +221,7 @@ impl App {
         match self.mode {
             Mode::Rename | Mode::Create => self.handle_input(ev),
             Mode::Confirm => self.handle_confirm(ev),
+            Mode::Search => self.handle_search(ev),
             Mode::Operation => self.handle_operation(ev),
             Mode::Normal | Mode::Visual => self.handle_list(ev),
         }
@@ -200,7 +249,12 @@ impl App {
                 self.anchor = self.cursor;
             }
         } else if k.cancel.matches(&ev) {
+            if self.mode == Mode::Normal && self.filtering() {
+                self.clear_filter();
+            }
             self.mode = Mode::Normal;
+        } else if k.search.matches(&ev) {
+            self.mode = Mode::Search;
         } else if k.reload.matches(&ev) {
             if let Err(e) = self.reload() {
                 self.set_status(e, true);
@@ -385,6 +439,33 @@ impl App {
         }
     }
 
+    fn handle_search(&mut self, ev: KeyEvent) {
+        let ctrl = ev.modifiers.contains(KeyModifiers::CONTROL);
+        let last = self.branches.len().saturating_sub(1);
+        match ev.code {
+            KeyCode::Char('c') if ctrl => self.quit = true,
+            KeyCode::Esc => {
+                self.clear_filter();
+                self.mode = Mode::Normal;
+            }
+            KeyCode::Enter => self.mode = Mode::Normal,
+            // Backspace on an empty query leaves search, like vim's `/`.
+            KeyCode::Backspace if !self.filtering() => self.mode = Mode::Normal,
+            KeyCode::Up | KeyCode::BackTab => self.cursor = self.cursor.saturating_sub(1),
+            KeyCode::Char('p' | 'k') if ctrl => self.cursor = self.cursor.saturating_sub(1),
+            KeyCode::Down | KeyCode::Tab => self.cursor = (self.cursor + 1).min(last),
+            KeyCode::Char('n' | 'j') if ctrl => self.cursor = (self.cursor + 1).min(last),
+            _ => {
+                let before = self.filter.value();
+                self.filter.handle(&ev);
+                if self.filter.value() != before {
+                    self.apply_filter();
+                    self.cursor = 0;
+                }
+            }
+        }
+    }
+
     fn start_input(&mut self, mode: Mode) {
         let Some(name) = self.branches.get(self.cursor).map(|b| b.name.clone()) else {
             return;
@@ -527,6 +608,7 @@ mod tests {
                 "esc" => KeyEvent::new(KeyCode::Esc, KeyModifiers::NONE),
                 "enter" => KeyEvent::new(KeyCode::Enter, KeyModifiers::NONE),
                 "ctrl+u" => KeyEvent::new(KeyCode::Char('u'), KeyModifiers::CONTROL),
+                "backspace" => KeyEvent::new(KeyCode::Backspace, KeyModifiers::NONE),
                 s => {
                     let c = s.chars().next().unwrap();
                     let mods = if c.is_uppercase() {
@@ -582,6 +664,65 @@ mod tests {
         assert_eq!(app.cursor, 1);
         press(&mut app, &["j", "j", "j"]);
         assert_eq!(app.cursor, 2);
+    }
+
+    fn shown(app: &App) -> Vec<&str> {
+        app.branches.iter().map(|b| b.name.as_str()).collect()
+    }
+
+    #[test]
+    fn search_filters_and_ranks() {
+        let (_d, mut app) = setup(&["feature/login", "fix-login-bug", "flag"]);
+        press(&mut app, &["/", "f", "l"]);
+        assert_eq!(app.mode, Mode::Search);
+        // Runs rank first, then shorter gaps; "main" doesn't match.
+        assert_eq!(shown(&app), ["flag", "fix-login-bug", "feature/login"]);
+        assert_eq!(app.matches[2], [0, 8]);
+        press(&mut app, &["o"]);
+        assert_eq!(shown(&app), ["fix-login-bug", "feature/login"]);
+        assert_eq!(app.cursor, 0);
+        // Enter keeps the filter; j / k navigate it and actions use it.
+        press(&mut app, &["enter", "j"]);
+        assert_eq!((app.mode, app.cursor), (Mode::Normal, 1));
+        press(&mut app, &["y"]);
+        assert_eq!(app.yanked.as_deref(), Some("feature/login"));
+        // Esc clears it, keeping the cursor on the same branch.
+        press(&mut app, &["esc"]);
+        assert!(!app.filtering());
+        assert_eq!(shown(&app).len(), 4);
+        assert_eq!(app.branches[app.cursor].name, "feature/login");
+    }
+
+    #[test]
+    fn search_then_checkout() {
+        let (_d, mut app) = setup(&["a", "zeta"]);
+        press(&mut app, &["/", "z", "t", "enter", "enter"]);
+        assert!(app.quit, "{:?}", app.status);
+        assert_eq!(app.exit_message.as_deref(), Some("switched to zeta"));
+    }
+
+    #[test]
+    fn search_esc_and_no_matches() {
+        let (_d, mut app) = setup(&["a"]);
+        press(&mut app, &["/", "x", "q", "d"]);
+        // Typed keys don't trigger actions, and nothing matches.
+        assert!(!app.quit && app.branches.is_empty());
+        press(&mut app, &["enter", "d", "enter"]);
+        assert_eq!((app.mode, names(&app).len()), (Mode::Normal, 2));
+        press(&mut app, &["/", "esc"]);
+        assert_eq!((app.mode, shown(&app)), (Mode::Normal, vec!["a", "main"]));
+    }
+
+    #[test]
+    fn search_backspace_on_empty_query_exits() {
+        let (_d, mut app) = setup(&["a", "zeta"]);
+        press(&mut app, &["/", "backspace"]);
+        assert_eq!(app.mode, Mode::Normal);
+        // Deleting the last char stays in search, showing everything.
+        press(&mut app, &["/", "z", "backspace"]);
+        assert_eq!((app.mode, shown(&app).len()), (Mode::Search, 3));
+        press(&mut app, &["backspace"]);
+        assert_eq!(app.mode, Mode::Normal);
     }
 
     #[test]
@@ -949,5 +1090,31 @@ mod tests {
         assert!(text[1].starts_with("  feature/login"));
         assert!(text[3].starts_with("* main"));
         assert_eq!(text[5], "Delete feature/login, fix-bug? [y/N]");
+    }
+
+    #[test]
+    fn renders_search() {
+        use ratatui::layout::Position;
+        use ratatui::style::Modifier;
+        use ratatui::{Terminal, backend::TestBackend};
+        let (_d, mut app) = setup(&["feature/login", "fix-bug"]);
+        press(&mut app, &["/", "f", "b"]);
+        let mut term = Terminal::new(TestBackend::new(60, 5)).unwrap();
+        term.draw(|f| crate::ui::draw(f, &mut app)).unwrap();
+        let buf = term.backend().buffer();
+        let row = |y| (0..60).map(|x| buf[(x, y)].symbol()).collect::<String>();
+        assert!(row(1).starts_with("  fix-bug "), "{}", row(1));
+        assert_eq!(row(2).trim_end(), "");
+        assert_eq!(row(3).trim_end(), "/fb");
+        assert_eq!(term.backend().cursor_position(), Position::new(3, 3));
+        // Matched chars are styled.
+        assert!(buf[(6, 1)].modifier.contains(Modifier::UNDERLINED));
+        assert!(!buf[(3, 1)].modifier.contains(Modifier::UNDERLINED));
+
+        press(&mut app, &["enter"]);
+        term.draw(|f| crate::ui::draw(f, &mut app)).unwrap();
+        let buf = term.backend().buffer();
+        let row = |y| (0..60).map(|x| buf[(x, y)].symbol()).collect::<String>();
+        assert!(row(0).contains("  /fb"), "{}", row(0));
     }
 }
