@@ -151,6 +151,8 @@ pub struct KeyMap {
     pub operation: Keys,
     /// Fuzzy-filter the branch list.
     pub search: Keys,
+    /// `git fetch --all --prune`, then reload.
+    pub fetch: Keys,
     pub reload: Keys,
     pub quit: Keys,
 }
@@ -174,6 +176,7 @@ impl Default for KeyMap {
             rebase: Keys::of(&["P"]),
             operation: Keys::of(&["o"]),
             search: Keys::of(&["/"]),
+            fetch: Keys::of(&["f"]),
             reload: Keys::of(&["R"]),
             quit: Keys::of(&["q", "ctrl+c"]),
         }

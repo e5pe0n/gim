@@ -258,6 +258,11 @@ impl App {
             self.mode = Mode::Normal;
         } else if k.search.matches(&ev) {
             self.mode = Mode::Search;
+        } else if k.fetch.matches(&ev) {
+            match self.repo.fetch().and_then(|_| self.reload()) {
+                Ok(()) => self.set_status("fetched", false),
+                Err(e) => self.set_status(e, true),
+            }
         } else if k.reload.matches(&ev) {
             if let Err(e) = self.reload() {
                 self.set_status(e, true);
@@ -816,6 +821,16 @@ mod tests {
         press(&mut app, &["enter"]);
         assert_eq!(app.status.as_ref().unwrap().text, "switched to main");
         assert_eq!(head(d.path()), "main");
+    }
+
+    #[test]
+    fn fetch_lists_new_and_pruned_remote_branches() {
+        let (u, _d, mut app) = setup_clone(&["feat"]);
+        git(u.path(), &["branch", "new"]);
+        git(u.path(), &["branch", "-D", "feat"]);
+        press(&mut app, &["f"]);
+        assert!(!is_error(&app), "{:?}", app.status);
+        assert_eq!(shown(&app), ["main", "origin/main", "origin/new"]);
     }
 
     #[test]
