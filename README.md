@@ -1,6 +1,6 @@
 # gim
 
-A TUI for managing git branches.
+A TUI for managing git branches by vim keybindings.
 
 ![gim demo](assets/demo.gif)
 
