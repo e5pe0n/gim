@@ -556,13 +556,27 @@ impl App {
         // Keep the cursor where the deleted block started.
         let (lo, _) = self.selection();
         self.mode = Mode::Normal;
-        let result = self.repo.delete_branches(&names, force);
+        // A branch checked out in another worktree can only go once that worktree does.
+        let result = self
+            .worktrees_of(&names)
+            .iter()
+            .try_for_each(|path| self.repo.remove_worktree(path, force))
+            .and_then(|_| self.repo.delete_branches(&names, force));
         let reloaded = self.reload();
         self.cursor = lo.min(self.branches.len().saturating_sub(1));
         match result.and(reloaded) {
             Ok(()) => self.set_status(format!("deleted {}", names.join(", ")), false),
             Err(e) => self.set_status(e, true),
         }
+    }
+
+    /// Worktrees other than this one that `names` are checked out in.
+    pub fn worktrees_of(&self, names: &[String]) -> Vec<String> {
+        self.all_branches
+            .iter()
+            .filter(|b| names.contains(&b.name))
+            .filter_map(|b| b.worktree.clone())
+            .collect()
     }
 
     fn handle_confirm(&mut self, ev: KeyEvent) {
@@ -882,6 +896,35 @@ mod tests {
         assert_eq!(names(&app), ["feat", "main"]);
         press(&mut app, &["D", "y"]);
         assert_eq!(names(&app), ["main"]);
+    }
+
+    #[test]
+    fn delete_removes_worktree() {
+        let (d, mut app) = setup(&["a", "b"]);
+        let wt = tempfile::tempdir().unwrap();
+        let (pa, pb) = (wt.path().join("a"), wt.path().join("b"));
+        git(
+            d.path(),
+            &["worktree", "add", "-q", pa.to_str().unwrap(), "a"],
+        );
+        git(
+            d.path(),
+            &["worktree", "add", "-q", pb.to_str().unwrap(), "b"],
+        );
+        std::fs::write(pb.join("dirty"), "x").unwrap();
+        press(&mut app, &["R", "g"]);
+        assert!(app.branches[0].worktree.is_some());
+        assert_eq!(app.worktrees_of(&["a".into()]).len(), 1);
+        press(&mut app, &["d", "y"]);
+        assert_eq!(names(&app), ["b", "main"], "{:?}", app.status);
+        assert!(!pa.exists());
+        // A worktree with untracked files needs force.
+        press(&mut app, &["g", "d", "y"]);
+        assert!(app.status.as_ref().is_some_and(|s| s.error));
+        assert_eq!(names(&app), ["b", "main"]);
+        press(&mut app, &["D", "y"]);
+        assert_eq!(names(&app), ["main"], "{:?}", app.status);
+        assert!(!pb.exists());
     }
 
     #[test]
