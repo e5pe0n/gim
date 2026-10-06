@@ -10,6 +10,8 @@ pub struct Branch {
     pub subject: String,
     /// For a remote-tracking branch (`name` is e.g. `origin/feat`), the remote (`origin`).
     pub remote: Option<String>,
+    /// Path of another worktree the branch is checked out in.
+    pub worktree: Option<String>,
 }
 
 impl Branch {
@@ -81,7 +83,7 @@ impl Repo {
     pub fn list_branches(&self, remotes: bool) -> Result<Vec<Branch>, String> {
         let mut args = vec![
             "for-each-ref",
-            "--format=%(HEAD)%09%(refname)%09%(symref)%09%(objectname:short)%09%(contents:subject)",
+            "--format=%(HEAD)%09%(refname)%09%(symref)%09%(worktreepath)%09%(objectname:short)%09%(contents:subject)",
             "refs/heads",
         ];
         let remote_names: Vec<String> = if remotes {
@@ -94,9 +96,9 @@ impl Repo {
         Ok(out
             .lines()
             .filter_map(|line| {
-                let mut f = line.splitn(5, '\t');
+                let mut f = line.splitn(6, '\t');
                 let mut next = || f.next().unwrap_or("").to_string();
-                let (current, refname, symref) = (next() == "*", next(), next());
+                let (current, refname, symref, worktree) = (next() == "*", next(), next(), next());
                 // Skip `origin/HEAD` and the like.
                 if !symref.is_empty() {
                     return None;
@@ -121,6 +123,8 @@ impl Repo {
                     hash: next(),
                     subject: next(),
                     remote,
+                    // `current` means checked out in this worktree.
+                    worktree: (!current && !worktree.is_empty()).then_some(worktree),
                 })
             })
             .collect())
@@ -130,6 +134,16 @@ impl Repo {
     pub fn delete_branches(&self, names: &[String], force: bool) -> Result<(), String> {
         let mut args = vec!["branch", if force { "-D" } else { "-d" }, "--"];
         args.extend(names.iter().map(String::as_str));
+        self.run(&args).map(|_| ())
+    }
+
+    /// `git worktree remove` (with `--force` when `force`, discarding its changes).
+    pub fn remove_worktree(&self, path: &str, force: bool) -> Result<(), String> {
+        let mut args = vec!["worktree", "remove"];
+        if force {
+            args.push("--force");
+        }
+        args.extend(["--", path]);
         self.run(&args).map(|_| ())
     }
 

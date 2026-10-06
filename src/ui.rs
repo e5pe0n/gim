@@ -77,7 +77,17 @@ pub fn draw(frame: &mut Frame, app: &mut App) {
             } else {
                 "Delete"
             };
-            Line::from(format!("{verb} {}? [y/N]", app.pending_delete.join(", "))).fg(Color::Red)
+            let worktrees = app.worktrees_of(&app.pending_delete);
+            let also = if worktrees.is_empty() {
+                String::new()
+            } else {
+                format!(" (and worktree {})", worktrees.join(", "))
+            };
+            Line::from(format!(
+                "{verb} {}{also}? [y/N]",
+                app.pending_delete.join(", ")
+            ))
+            .fg(Color::Red)
         }
         Mode::Operation => operation_line(app),
         _ => match &app.status {
@@ -124,7 +134,12 @@ fn draw_list(frame: &mut Frame, app: &mut App, area: ratatui::layout::Rect) {
         .iter()
         .enumerate()
         .map(|(i, b)| {
-            let marker = if b.current { "* " } else { "  " };
+            // Like `git branch`: `+` for a branch checked out in another worktree.
+            let marker = match (b.current, &b.worktree) {
+                (true, _) => "* ",
+                (false, Some(_)) => "+ ",
+                (false, None) => "  ",
+            };
             let pad = " ".repeat(name_width - b.name.width());
             let positions = app.matches.get(i).map(Vec::as_slice).unwrap_or_default();
             let highlighted = i == app.cursor || (visual && (lo..=hi).contains(&i));
@@ -147,6 +162,8 @@ fn draw_list(frame: &mut Frame, app: &mut App, area: ratatui::layout::Rect) {
             }
             let name_style = if b.current {
                 full.fg(Color::Green).bold()
+            } else if b.worktree.is_some() {
+                full.fg(Color::Cyan)
             } else if b.remote.is_some() {
                 full.fg(Color::Red)
             } else {
