@@ -7,6 +7,7 @@ mod git;
 mod input;
 mod ops;
 mod ui;
+mod update;
 
 use std::{
     env,
@@ -18,7 +19,7 @@ use ratatui::crossterm::event::{self, Event, KeyEventKind};
 
 use app::App;
 
-const USAGE: &str = "usage: gim [-c|--config <path>]";
+const USAGE: &str = "usage: gim [-c|--config <path>] | -V|--version | self-update";
 
 fn main() -> ExitCode {
     match run() {
@@ -38,6 +39,11 @@ fn run() -> Result<(), String> {
             "-c" | "--config" => {
                 config_path = Some(PathBuf::from(args.next().ok_or(USAGE)?));
             }
+            "-V" | "--version" => {
+                println!("gim {}", env!("CARGO_PKG_VERSION"));
+                return Ok(());
+            }
+            "self-update" => return update::run(),
             "-h" | "--help" => {
                 println!("{USAGE}");
                 return Ok(());

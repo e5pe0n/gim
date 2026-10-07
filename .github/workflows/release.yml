@@ -1,0 +1,103 @@
+name: Release
+
+# Runs when a release PR (opened by prepare-release.yml) is merged into main.
+# The PR description is published as the release note.
+on:
+  pull_request:
+    types: [closed]
+    branches: [main]
+
+permissions:
+  contents: read
+
+env:
+  CARGO_TERM_COLOR: always
+
+jobs:
+  release:
+    if: >-
+      github.event.pull_request.merged &&
+      github.event.pull_request.head.repo.full_name == github.repository &&
+      startsWith(github.event.pull_request.head.ref, 'release/v')
+    runs-on: ubuntu-latest
+    permissions:
+      contents: write
+    outputs:
+      tag: ${{ steps.tag.outputs.tag }}
+    env:
+      GH_TOKEN: ${{ github.token }}
+      SHA: ${{ github.event.pull_request.merge_commit_sha }}
+    steps:
+      - uses: actions/checkout@11d5960a326750d5838078e36cf38b85af677262 # v4
+        with:
+          ref: ${{ github.event.pull_request.merge_commit_sha }}
+          persist-credentials: false
+
+      - name: Check version
+        id: tag
+        env:
+          HEAD_REF: ${{ github.event.pull_request.head.ref }}
+        run: |
+          version=$(cargo metadata --no-deps --format-version 1 | jq -r '.packages[0].version')
+          if [ "$HEAD_REF" != "release/v$version" ]; then
+            echo "::error::branch $HEAD_REF does not match Cargo.toml version $version"
+            exit 1
+          fi
+          echo "tag=v$version" >> "$GITHUB_OUTPUT"
+
+      - name: Create draft release
+        env:
+          TAG: ${{ steps.tag.outputs.tag }}
+          BODY: ${{ github.event.pull_request.body }}
+        run: |
+          printf '%s\n' "$BODY" > notes.md
+          gh release create "$TAG" --repo "$GITHUB_REPOSITORY" --target "$SHA" \
+            --title "$TAG" --notes-file notes.md --draft
+
+  build:
+    needs: release
+    strategy:
+      matrix:
+        include:
+          - target: x86_64-unknown-linux-gnu
+            os: ubuntu-latest
+          - target: aarch64-unknown-linux-gnu
+            os: ubuntu-24.04-arm
+          - target: aarch64-apple-darwin
+            os: macos-latest
+          - target: x86_64-apple-darwin
+            os: macos-latest
+    runs-on: ${{ matrix.os }}
+    permissions:
+      contents: write
+    env:
+      GH_TOKEN: ${{ github.token }}
+      TAG: ${{ needs.release.outputs.tag }}
+      TARGET: ${{ matrix.target }}
+    steps:
+      - uses: actions/checkout@11d5960a326750d5838078e36cf38b85af677262 # v4
+        with:
+          ref: ${{ github.event.pull_request.merge_commit_sha }}
+          persist-credentials: false
+      # No build cache here: published binaries are built from scratch.
+      - uses: dtolnay/rust-toolchain@6bed0761d98439e5a578e2877258200ad565ba87 # stable
+        with:
+          toolchain: stable
+          targets: ${{ matrix.target }}
+      - run: cargo build --release --locked --target "$TARGET"
+      - name: Upload archive
+        run: |
+          archive="gim-$TAG-$TARGET.tar.gz"
+          tar -czf "$archive" -C "target/$TARGET/release" gim
+          gh release upload "$TAG" "$archive" --repo "$GITHUB_REPOSITORY"
+
+  publish:
+    needs: [release, build]
+    runs-on: ubuntu-latest
+    permissions:
+      contents: write
+    env:
+      GH_TOKEN: ${{ github.token }}
+      TAG: ${{ needs.release.outputs.tag }}
+    steps:
+      - run: gh release edit "$TAG" --repo "$GITHUB_REPOSITORY" --draft=false --latest
