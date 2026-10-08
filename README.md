@@ -142,5 +142,5 @@ quit         = ["q", "ctrl+c"]
 
 Repository setup: Prepare release pushes and opens the PR as a GitHub App (so CI runs on the release
 PR). Install an app with *Contents* and *Pull requests* read and write access on this repository, and
-add its client ID as the `RELEASE_APP_CLIENT_ID` variable and a private key as the
-`RELEASE_APP_PRIVATE_KEY` secret.
+add its client ID as the `RELEASE_APP_CLIENT_ID` variable. Create a `release` environment limited to
+the `develop` branch and add a private key of the app as its `RELEASE_APP_PRIVATE_KEY` secret.
