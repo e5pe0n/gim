@@ -140,6 +140,7 @@ quit         = ["q", "ctrl+c"]
    release with the PR description as its note.
 4. Merge `main` back into `develop`.
 
-Repository setup: enable *Settings → Actions → General → Allow GitHub Actions to create and approve
-pull requests*. CI doesn't run on PRs opened with the default token; to get it on release PRs, add a
-fine-grained PAT (contents and pull requests: write) as the `RELEASE_TOKEN` secret.
+Repository setup: Prepare release pushes and opens the PR as a GitHub App (so CI runs on the release
+PR). Install an app with *Contents* and *Pull requests* read and write access on this repository, and
+add its client ID as the `RELEASE_APP_CLIENT_ID` variable. Create a `release` environment limited to
+the `develop` branch and add a private key of the app as its `RELEASE_APP_PRIVATE_KEY` secret.
