@@ -1,0 +1,82 @@
+name: Prepare release
+
+on:
+  workflow_dispatch:
+    inputs:
+      bump:
+        description: Version part to bump
+        type: choice
+        options: [patch, minor, major]
+        default: patch
+      ref:
+        description: Branch to release from
+        type: string
+        default: develop
+
+# Pushing and opening the PR use a GitHub App token, so CI runs on the release PR.
+permissions:
+  contents: read
+
+jobs:
+  prepare:
+    runs-on: ubuntu-latest
+    # The app's private key is a secret of this environment, limited to the release branch.
+    environment: release
+    steps:
+      - uses: actions/create-github-app-token@bcd2ba49218906704ab6c1aa796996da409d3eb1 # v3.2.0
+        id: app
+        with:
+          client-id: ${{ vars.RELEASE_APP_CLIENT_ID }}
+          private-key: ${{ secrets.RELEASE_APP_PRIVATE_KEY }}
+          permission-contents: write
+          permission-pull-requests: write
+      - uses: actions/checkout@11d5960a326750d5838078e36cf38b85af677262 # v4
+        with:
+          ref: ${{ inputs.ref }}
+          fetch-depth: 0
+          token: ${{ steps.app.outputs.token }}
+      - uses: dtolnay/rust-toolchain@6bed0761d98439e5a578e2877258200ad565ba87 # stable
+        with:
+          toolchain: stable
+
+      - name: Bump version
+        id: version
+        env:
+          BUMP: ${{ inputs.bump }}
+        run: |
+          current=$(cargo metadata --no-deps --format-version 1 | jq -r '.packages[0].version')
+          IFS=. read -r major minor patch <<< "${current%%-*}"
+          case "$BUMP" in
+            major) next="$((major + 1)).0.0" ;;
+            minor) next="$major.$((minor + 1)).0" ;;
+            patch) next="$major.$minor.$((patch + 1))" ;;
+          esac
+          sed -i "0,/^version = \".*\"/s//version = \"$next\"/" Cargo.toml
+          cargo update --workspace
+          echo "Bumped $current -> $next"
+          echo "version=$next" >> "$GITHUB_OUTPUT"
+
+      - name: Push release branch
+        env:
+          GH_TOKEN: ${{ steps.app.outputs.token }}
+          BOT: ${{ steps.app.outputs.app-slug }}[bot]
+          VERSION: ${{ steps.version.outputs.version }}
+        run: |
+          git config user.name "$BOT"
+          git config user.email "$(gh api "/users/$BOT" --jq .id)+$BOT@users.noreply.github.com"
+          git switch -c "release/v$VERSION"
+          git commit -am "Release v$VERSION"
+          git push origin "release/v$VERSION"
+
+      - name: Open release PR
+        env:
+          GH_TOKEN: ${{ steps.app.outputs.token }}
+          VERSION: ${{ steps.version.outputs.version }}
+        run: |
+          args=(-f "tag_name=v$VERSION" -f "target_commitish=release/v$VERSION")
+          if prev=$(git describe --tags --abbrev=0 --match 'v*' 2>/dev/null); then
+            args+=(-f "previous_tag_name=$prev")
+          fi
+          gh api "repos/$GITHUB_REPOSITORY/releases/generate-notes" "${args[@]}" --jq .body > notes.md
+          gh pr create --base main --head "release/v$VERSION" \
+            --title "Release v$VERSION" --body-file notes.md
