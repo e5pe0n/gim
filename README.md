@@ -6,11 +6,17 @@ A TUI for managing git branches by vim keybindings.
 
 ## Install
 
+Download the archive for your platform from [Releases](https://github.com/e5pe0n/gim/releases),
+extract it and put `gim` on your `PATH`, or build from source:
+
 ```sh
 cargo install --path .
 ```
 
 Run `gim` inside a git repository.
+
+- `gim --version` (`-V`) prints the version.
+- `gim self-update` replaces the binary with the latest release.
 
 ## Keys (defaults)
 
@@ -122,3 +128,18 @@ fetch        = "f"
 reload       = "R"
 quit         = ["q", "ctrl+c"]
 ```
+
+## Releasing
+
+1. Actions → **Prepare release** → Run workflow, choosing the part to bump (`patch` / `minor` /
+   `major`) and the branch to release from (default `develop`). It bumps the version in
+   `Cargo.toml`, pushes `release/vX.Y.Z` and opens a PR to `main` whose description is the
+   generated release note.
+2. Review the PR and edit its description to adjust the release note.
+3. Merge it. **Release** tags `vX.Y.Z` on the merge commit, builds the binaries and publishes the
+   release with the PR description as its note.
+4. Merge `main` back into `develop`.
+
+Repository setup: enable *Settings → Actions → General → Allow GitHub Actions to create and approve
+pull requests*. CI doesn't run on PRs opened with the default token; to get it on release PRs, add a
+fine-grained PAT (contents and pull requests: write) as the `RELEASE_TOKEN` secret.

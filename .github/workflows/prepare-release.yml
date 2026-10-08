@@ -1,0 +1,73 @@
+name: Prepare release
+
+on:
+  workflow_dispatch:
+    inputs:
+      bump:
+        description: Version part to bump
+        type: choice
+        options: [patch, minor, major]
+        default: patch
+      ref:
+        description: Branch to release from
+        type: string
+        default: develop
+
+permissions:
+  contents: write
+  pull-requests: write
+
+jobs:
+  prepare:
+    runs-on: ubuntu-latest
+    env:
+      # A PAT / GitHub App token lets CI run on the release PR; GITHUB_TOKEN works without it.
+      GH_TOKEN: ${{ secrets.RELEASE_TOKEN || github.token }}
+    steps:
+      - uses: actions/checkout@11d5960a326750d5838078e36cf38b85af677262 # v4
+        with:
+          ref: ${{ inputs.ref }}
+          fetch-depth: 0
+          token: ${{ secrets.RELEASE_TOKEN || github.token }}
+      - uses: dtolnay/rust-toolchain@6bed0761d98439e5a578e2877258200ad565ba87 # stable
+        with:
+          toolchain: stable
+
+      - name: Bump version
+        id: version
+        env:
+          BUMP: ${{ inputs.bump }}
+        run: |
+          current=$(cargo metadata --no-deps --format-version 1 | jq -r '.packages[0].version')
+          IFS=. read -r major minor patch <<< "${current%%-*}"
+          case "$BUMP" in
+            major) next="$((major + 1)).0.0" ;;
+            minor) next="$major.$((minor + 1)).0" ;;
+            patch) next="$major.$minor.$((patch + 1))" ;;
+          esac
+          sed -i "0,/^version = \".*\"/s//version = \"$next\"/" Cargo.toml
+          cargo update --workspace
+          echo "Bumped $current -> $next"
+          echo "version=$next" >> "$GITHUB_OUTPUT"
+
+      - name: Push release branch
+        env:
+          VERSION: ${{ steps.version.outputs.version }}
+        run: |
+          git config user.name "github-actions[bot]"
+          git config user.email "41898282+github-actions[bot]@users.noreply.github.com"
+          git switch -c "release/v$VERSION"
+          git commit -am "Release v$VERSION"
+          git push origin "release/v$VERSION"
+
+      - name: Open release PR
+        env:
+          VERSION: ${{ steps.version.outputs.version }}
+        run: |
+          args=(-f "tag_name=v$VERSION" -f "target_commitish=release/v$VERSION")
+          if prev=$(git describe --tags --abbrev=0 --match 'v*' 2>/dev/null); then
+            args+=(-f "previous_tag_name=$prev")
+          fi
+          gh api "repos/$GITHUB_REPOSITORY/releases/generate-notes" "${args[@]}" --jq .body > notes.md
+          gh pr create --base main --head "release/v$VERSION" \
+            --title "Release v$VERSION" --body-file notes.md
