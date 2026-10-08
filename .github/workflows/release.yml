@@ -3,8 +3,7 @@ name: Release
 # Runs when a release PR (opened by prepare-release.yml) is merged into main.
 # The PR description is published as the release note.
 on:
-  pull_request:
-    types: [closed]
+  push:
     branches: [main]
 
 permissions:
@@ -14,48 +13,64 @@ env:
   CARGO_TERM_COLOR: always
 
 jobs:
-  release:
-    if: >-
-      github.event.pull_request.merged &&
-      github.event.pull_request.head.repo.full_name == github.repository &&
-      startsWith(github.event.pull_request.head.ref, 'release/v')
+  # Finds the merged release PR for the pushed commit; other pushes to main release nothing.
+  check:
     runs-on: ubuntu-latest
     permissions:
-      contents: write
+      contents: read
+      pull-requests: read
     outputs:
-      tag: ${{ steps.tag.outputs.tag }}
+      tag: ${{ steps.check.outputs.tag }}
+      pr: ${{ steps.check.outputs.pr }}
     env:
       GH_TOKEN: ${{ github.token }}
-      SHA: ${{ github.event.pull_request.merge_commit_sha }}
     steps:
       - uses: actions/checkout@11d5960a326750d5838078e36cf38b85af677262 # v4
         with:
-          ref: ${{ github.event.pull_request.merge_commit_sha }}
           persist-credentials: false
 
-      - name: Check version
-        id: tag
-        env:
-          HEAD_REF: ${{ github.event.pull_request.head.ref }}
+      - name: Find release PR
+        id: check
         run: |
+          pr=$(gh api "repos/$GITHUB_REPOSITORY/commits/$GITHUB_SHA/pulls" --jq '
+            [.[] | select(.merged_at != null and .base.ref == "main"
+              and .head.repo.full_name == env.GITHUB_REPOSITORY
+              and (.head.ref | startswith("release/v")))]
+            | first // empty | "\(.number) \(.head.ref)"')
+          if [ -z "$pr" ]; then
+            echo "Not a release PR merge; nothing to release."
+            exit 0
+          fi
+          read -r number head_ref <<< "$pr"
           version=$(cargo metadata --no-deps --format-version 1 | jq -r '.packages[0].version')
-          if [ "$HEAD_REF" != "release/v$version" ]; then
-            echo "::error::branch $HEAD_REF does not match Cargo.toml version $version"
+          if [ "$head_ref" != "release/v$version" ]; then
+            echo "::error::branch $head_ref does not match Cargo.toml version $version"
             exit 1
           fi
           echo "tag=v$version" >> "$GITHUB_OUTPUT"
+          echo "pr=$number" >> "$GITHUB_OUTPUT"
 
+  release:
+    needs: check
+    if: needs.check.outputs.tag != ''
+    runs-on: ubuntu-latest
+    environment: release
+    permissions:
+      contents: write
+      pull-requests: read
+    env:
+      GH_TOKEN: ${{ github.token }}
+      TAG: ${{ needs.check.outputs.tag }}
+      PR: ${{ needs.check.outputs.pr }}
+    steps:
       - name: Create draft release
-        env:
-          TAG: ${{ steps.tag.outputs.tag }}
-          BODY: ${{ github.event.pull_request.body }}
         run: |
-          printf '%s\n' "$BODY" > notes.md
-          gh release create "$TAG" --repo "$GITHUB_REPOSITORY" --target "$SHA" \
+          gh api "repos/$GITHUB_REPOSITORY/pulls/$PR" --jq '.body // ""' > notes.md
+          gh release create "$TAG" --repo "$GITHUB_REPOSITORY" --target "$GITHUB_SHA" \
             --title "$TAG" --notes-file notes.md --draft
 
   build:
-    needs: release
+    needs: [check, release]
     strategy:
       matrix:
         include:
@@ -68,16 +83,16 @@ jobs:
           - target: x86_64-apple-darwin
             os: macos-latest
     runs-on: ${{ matrix.os }}
+    environment: release
     permissions:
       contents: write
     env:
       GH_TOKEN: ${{ github.token }}
-      TAG: ${{ needs.release.outputs.tag }}
+      TAG: ${{ needs.check.outputs.tag }}
       TARGET: ${{ matrix.target }}
     steps:
       - uses: actions/checkout@11d5960a326750d5838078e36cf38b85af677262 # v4
         with:
-          ref: ${{ github.event.pull_request.merge_commit_sha }}
           persist-credentials: false
       # No build cache here: published binaries are built from scratch.
       - uses: dtolnay/rust-toolchain@6bed0761d98439e5a578e2877258200ad565ba87 # stable
@@ -92,12 +107,13 @@ jobs:
           gh release upload "$TAG" "$archive" --repo "$GITHUB_REPOSITORY"
 
   publish:
-    needs: [release, build]
+    needs: [check, build]
     runs-on: ubuntu-latest
+    environment: release
     permissions:
       contents: write
     env:
       GH_TOKEN: ${{ github.token }}
-      TAG: ${{ needs.release.outputs.tag }}
+      TAG: ${{ needs.check.outputs.tag }}
     steps:
       - run: gh release edit "$TAG" --repo "$GITHUB_REPOSITORY" --draft=false --latest
