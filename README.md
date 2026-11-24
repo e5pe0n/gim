@@ -57,7 +57,9 @@ to that worktree instead: the list is reloaded there and every action runs there
 With `[worktree] enabled = true`, every branch is checked out in a worktree of its own: `enter` on a
 branch that has none creates one at the configured `path` (`git worktree add`) and moves there, and
 `b` creates the new branch in a new worktree. On a remote branch the new local branch tracks it.
-The branch checked out in the current worktree stays here. gim can't change
+The branch checked out in the current worktree stays here. With the default `path`, worktrees go in
+`.<repo>.worktrees/` inside the main worktree, which `git status` there lists as untracked; ignore
+it with e.g. `echo '/.*.worktrees/' >> .git/info/exclude`. gim can't change
 your shell's directory itself; to `cd` into the worktree when gim quits, use a shell function like:
 
 ```sh
@@ -137,7 +139,7 @@ remotes = true
 enabled = false
 # Where a branch's worktree is created: `{repo}` is the main worktree's directory name, `{branch}`
 # the branch name. A relative path is relative to the main worktree; `~/` is your home directory.
-path = "../{repo}.worktrees/{branch}"
+path = ".{repo}.worktrees/{branch}"
 
 [keys]
 up           = ["k", "up"]

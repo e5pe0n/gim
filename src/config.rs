@@ -222,7 +222,7 @@ impl Default for WorktreeConfig {
     fn default() -> Self {
         WorktreeConfig {
             enabled: false,
-            path: "../{repo}.worktrees/{branch}".into(),
+            path: ".{repo}.worktrees/{branch}".into(),
         }
     }
 }
@@ -335,7 +335,7 @@ up = ["e", "up"]
         let main = Path::new("/src/gim");
         assert_eq!(
             cfg.worktree.path_for(main, "feat/x"),
-            Path::new("/src/gim.worktrees/feat/x")
+            Path::new("/src/gim/.gim.worktrees/feat/x")
         );
         let cfg = parse("[worktree]\npath = \"/wt/{repo}-{branch}\"").unwrap();
         assert!(!cfg.worktree.enabled);
