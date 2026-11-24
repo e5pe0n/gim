@@ -17,6 +17,8 @@ Run `gim` inside a git repository.
 
 - `gim --version` (`-V`) prints the version.
 - `gim self-update` replaces the binary with the latest release.
+- `gim --cwd-file <path>` writes the worktree gim moved to into `<path>` on exit (see
+  [Moving to a worktree](#moving-to-a-worktree)).
 
 ## Keys (defaults)
 
@@ -30,7 +32,7 @@ Run `gim` inside a git repository.
 | `d`            | delete branch(es) (`git branch -d`)      |
 | `D`            | force delete branch(es) (`git branch -D`) |
 | `r`            | rename branch on the cursor              |
-| `enter`        | checkout branch on the cursor (and quit, see `quit_on_checkout`); on a remote branch, check out a local branch tracking it |
+| `enter`        | checkout branch on the cursor (and quit, see `quit_on_checkout`); on a remote branch, check out a local branch tracking it; on a branch in another worktree (or with `[worktree] enabled`), move to its worktree |
 | `b`            | create a branch from the cursor branch and check it out (`git checkout -b`) |
 | `y`            | yank the branch on the cursor            |
 | `p`            | merge the yanked branch into the cursor branch |
@@ -42,9 +44,32 @@ Run `gim` inside a git repository.
 
 `d` / `D` act on the visual selection when one is active, otherwise on the cursor branch.
 
-Branches checked out in another worktree are marked with `+` (in cyan). Deleting one removes that
+Branches checked out in another worktree are marked with `+` (in cyan). Checking one out moves gim
+to that worktree (see [Moving to a worktree](#moving-to-a-worktree)). Deleting one removes that
 worktree first (`git worktree remove`), which git refuses while it has changes or untracked files;
 `D` removes it anyway (`--force`), discarding them.
+
+### Moving to a worktree
+
+A branch checked out in another worktree can't be checked out here too, so `enter` on one moves gim
+to that worktree instead: the list is reloaded there and every action runs there.
+
+With `[worktree] enabled = true`, every branch is checked out in a worktree of its own: `enter` on a
+branch that has none creates one at the configured `path` (`git worktree add`) and moves there, and
+`b` creates the new branch in a new worktree. On a remote branch the new local branch tracks it.
+The branch checked out in the current worktree stays here. gim can't change
+your shell's directory itself; to `cd` into the worktree when gim quits, use a shell function like:
+
+```sh
+gim() {
+  local tmp dir
+  tmp="$(mktemp)"
+  command gim --cwd-file "$tmp" "$@"
+  dir="$(cat -- "$tmp")"
+  rm -f -- "$tmp"
+  [ -n "$dir" ] && [ "$dir" != "$PWD" ] && cd -- "$dir"
+}
+```
 
 ### Remote branches
 
@@ -106,6 +131,18 @@ quit_on_checkout = true
 
 # List remote-tracking branches after the local ones.
 remotes = true
+
+[worktree]
+# Check out each branch in its own worktree (`enter` / `b`), creating it if needed, and move there.
+enabled = false
+# Where a branch's worktree is created. Placeholders:
+#   {data_home}  `$XDG_DATA_HOME`, or `~/.local/share` when unset
+#   {repo_path}  the main worktree's path relative to your home directory (e.g. `src/gim`), or its
+#                absolute path without the leading `/` when outside it
+#   {repo}       the main worktree's directory name
+#   {branch}     the branch name
+# A relative path is relative to the main worktree; `~/` is your home directory.
+path = "{data_home}/gim/worktrees/{repo_path}/{branch}"
 
 [keys]
 up           = ["k", "up"]

@@ -97,6 +97,8 @@ pub struct App {
     pub quit: bool,
     /// Printed after the terminal is restored, when quitting after a checkout.
     pub exit_message: Option<String>,
+    /// Worktree moved to by checking out a branch checked out there, for `--cwd-file`.
+    pub cwd: Option<String>,
 }
 
 impl App {
@@ -124,6 +126,7 @@ impl App {
             list_state: ListState::default(),
             quit: false,
             exit_message: None,
+            cwd: None,
         };
         app.reload()?;
         if let Some(i) = app.branches.iter().position(|b| b.current) {
@@ -507,15 +510,31 @@ impl App {
         };
         self.mode = Mode::Normal;
         let (name, local) = (b.name.clone(), b.local_name().to_string());
-        let (result, done) = if b.remote.is_none() {
-            (self.repo.checkout(&name), format!("switched to {name}"))
-        } else if self
-            .all_branches
-            .iter()
-            .any(|b| b.remote.is_none() && b.name == local)
-        {
-            // Like `git switch`: a local branch of that name wins.
-            (self.repo.checkout(&local), format!("switched to {local}"))
+        // Like `git switch`, a remote branch checks out the local branch of that name if any.
+        let target = if b.remote.is_none() {
+            Some(&name)
+        } else {
+            self.all_branches
+                .iter()
+                .any(|b| b.remote.is_none() && b.name == local)
+                .then_some(&local)
+        };
+        let (result, done) = if let Some(target) = target {
+            let current = self
+                .all_branches
+                .iter()
+                .any(|b| b.current && b.name == *target);
+            if let Some(path) = self.worktrees_of(std::slice::from_ref(target)).pop() {
+                // A branch checked out in another worktree is used there: move to that worktree.
+                self.move_to(path.clone());
+                (Ok(()), format!("moved to worktree {path} ({target})"))
+            } else if self.cfg.worktree.enabled && !current {
+                self.add_worktree(target, None, false)
+            } else {
+                (self.repo.checkout(target), format!("switched to {target}"))
+            }
+        } else if self.cfg.worktree.enabled {
+            self.add_worktree(&name, Some(&local), true)
         } else {
             (
                 self.repo.checkout_track(&local, &name),
@@ -531,6 +550,38 @@ impl App {
             }
             Err(e) => self.set_status(e, true),
         }
+    }
+
+    /// Work in the worktree at `path` from now on.
+    fn move_to(&mut self, path: String) {
+        self.repo = Repo::new(&path);
+        self.cwd = Some(path);
+    }
+
+    /// Create a worktree at the configured path for `new` (a new branch from `start`, tracking it
+    /// when `track`), or for the existing branch `start`, and move to it.
+    fn add_worktree(
+        &mut self,
+        start: &str,
+        new: Option<&str>,
+        track: bool,
+    ) -> (Result<(), String>, String) {
+        let branch = new.unwrap_or(start);
+        let path = match self.repo.main_worktree() {
+            Ok(main) => self.cfg.worktree.path_for(&main, branch),
+            Err(e) => return (Err(e), String::new()),
+        };
+        let path = path.to_string_lossy().into_owned();
+        let result = self.repo.add_worktree(&path, start, new, track);
+        if result.is_ok() {
+            self.move_to(path.clone());
+        }
+        let done = match (new, track) {
+            (Some(_), true) => format!("created worktree {path} ({branch} tracking {start})"),
+            (Some(_), false) => format!("created worktree {path} (new branch {branch})"),
+            (None, _) => format!("created worktree {path} ({branch})"),
+        };
+        (result, done)
     }
 
     fn start_delete(&mut self, force: bool) {
@@ -607,6 +658,8 @@ impl App {
                         self.repo.rename_branch(&target, &new),
                         format!("renamed {target} -> {new}"),
                     )
+                } else if self.cfg.worktree.enabled {
+                    self.add_worktree(&target, Some(&new), false)
                 } else {
                     (
                         self.repo.checkout_new(&new, &target),
@@ -925,6 +978,109 @@ mod tests {
         press(&mut app, &["D", "y"]);
         assert_eq!(names(&app), ["main"], "{:?}", app.status);
         assert!(!pb.exists());
+    }
+
+    #[test]
+    fn checkout_moves_to_other_worktree() {
+        let (d, mut app) = setup(&["a"]);
+        let wt = tempfile::tempdir().unwrap();
+        let pa = wt.path().join("a");
+        git(
+            d.path(),
+            &["worktree", "add", "-q", pa.to_str().unwrap(), "a"],
+        );
+        press(&mut app, &["R", "g"]);
+        let path = app.branches[app.cursor].worktree.clone().unwrap();
+        press(&mut app, &["enter"]);
+        assert_eq!(app.branches[app.cursor].name, "a");
+        assert!(app.branches[app.cursor].current, "{:?}", app.status);
+        // The worktree we came from now shows main as checked out elsewhere.
+        let main = app.branches.iter().find(|b| b.name == "main").unwrap();
+        assert!(main.worktree.is_some());
+        assert_eq!(app.cwd.as_deref(), Some(path.as_str()));
+        assert_eq!(
+            app.exit_message,
+            Some(format!("moved to worktree {path} (a)"))
+        );
+        // Neither worktree's checkout changed.
+        assert_eq!(rev(d.path(), &["branch", "--show-current"]), "main");
+        assert_eq!(rev(&pa, &["branch", "--show-current"]), "a");
+    }
+
+    /// Enable `worktree` with worktrees created under a new temp dir.
+    fn enable_worktrees(app: &mut App) -> TempDir {
+        let wt = tempfile::tempdir().unwrap();
+        app.cfg.worktree.enabled = true;
+        app.cfg.worktree.path = format!("{}/{{branch}}", wt.path().display());
+        app.cfg.quit_on_checkout = false;
+        wt
+    }
+
+    /// Assert gim moved to a new worktree at `<wt>/<dir>` with `branch` checked out.
+    fn assert_in_new_worktree(app: &App, wt: &TempDir, dir: &str, branch: &str) {
+        assert!(!is_error(app), "{:?}", app.status);
+        let cwd = PathBuf::from(app.cwd.as_ref().unwrap());
+        assert!(cwd.ends_with(dir), "{cwd:?}");
+        assert_eq!(
+            cwd.canonicalize().unwrap(),
+            wt.path().join(dir).canonicalize().unwrap()
+        );
+        assert_eq!(head(&cwd), branch);
+        let cur = &app.branches[app.cursor];
+        assert!(cur.current && cur.name == branch, "{cur:?}");
+    }
+
+    #[test]
+    fn checkout_creates_worktree_when_enabled() {
+        let (d, mut app) = setup(&["feat/a"]);
+        let wt = enable_worktrees(&mut app);
+        // The current branch stays where it is.
+        cursor_to(&mut app, "main");
+        press(&mut app, &["enter"]);
+        assert_eq!(app.cwd, None, "{:?}", app.status);
+        cursor_to(&mut app, "feat/a");
+        press(&mut app, &["enter"]);
+        assert_in_new_worktree(&app, &wt, "feat/a", "feat/a");
+        assert!(
+            app.status
+                .as_ref()
+                .unwrap()
+                .text
+                .starts_with("created worktree ")
+        );
+        assert_eq!(head(d.path()), "main");
+        // Checking out main again moves back to the main worktree.
+        cursor_to(&mut app, "main");
+        press(&mut app, &["enter"]);
+        let cwd = PathBuf::from(app.cwd.as_ref().unwrap());
+        assert_eq!(
+            cwd.canonicalize().unwrap(),
+            d.path().canonicalize().unwrap()
+        );
+    }
+
+    #[test]
+    fn checkout_new_creates_worktree_when_enabled() {
+        let (d, mut app) = setup(&[]);
+        let wt = enable_worktrees(&mut app);
+        press(&mut app, &["b", "x", "enter"]);
+        assert_in_new_worktree(&app, &wt, "x", "x");
+        assert_eq!(head(d.path()), "main");
+    }
+
+    #[test]
+    fn checkout_remote_creates_tracking_worktree_when_enabled() {
+        let (_u, d, mut app) = setup_clone(&["feat"]);
+        let wt = enable_worktrees(&mut app);
+        cursor_to(&mut app, "origin/feat");
+        press(&mut app, &["enter"]);
+        assert_in_new_worktree(&app, &wt, "feat", "feat");
+        let cwd = PathBuf::from(app.cwd.as_ref().unwrap());
+        assert_eq!(
+            rev(&cwd, &["rev-parse", "--abbrev-ref", "feat@{upstream}"]),
+            "origin/feat"
+        );
+        assert_eq!(head(d.path()), "main");
     }
 
     #[test]
