@@ -507,15 +507,31 @@ impl App {
         };
         self.mode = Mode::Normal;
         let (name, local) = (b.name.clone(), b.local_name().to_string());
-        let (result, done) = if b.remote.is_none() {
-            (self.repo.checkout(&name), format!("switched to {name}"))
-        } else if self
-            .all_branches
-            .iter()
-            .any(|b| b.remote.is_none() && b.name == local)
-        {
-            // Like `git switch`: a local branch of that name wins.
-            (self.repo.checkout(&local), format!("switched to {local}"))
+        // Like `git switch`, a remote branch checks out the local branch of that name if any.
+        let target = if b.remote.is_none() {
+            Some(&name)
+        } else {
+            self.all_branches
+                .iter()
+                .any(|b| b.remote.is_none() && b.name == local)
+                .then_some(&local)
+        };
+        let (result, done) = if let Some(target) = target {
+            // A branch checked out in another worktree is freed by detaching that worktree.
+            let worktrees = self.worktrees_of(std::slice::from_ref(target));
+            let result = worktrees
+                .iter()
+                .try_for_each(|path| self.repo.detach_worktree(path))
+                .and_then(|_| self.repo.checkout(target));
+            let done = if worktrees.is_empty() {
+                format!("switched to {target}")
+            } else {
+                format!(
+                    "switched to {target} (detached worktree {})",
+                    worktrees.join(", ")
+                )
+            };
+            (result, done)
         } else {
             (
                 self.repo.checkout_track(&local, &name),
@@ -925,6 +941,32 @@ mod tests {
         press(&mut app, &["D", "y"]);
         assert_eq!(names(&app), ["main"], "{:?}", app.status);
         assert!(!pb.exists());
+    }
+
+    #[test]
+    fn checkout_detaches_other_worktree() {
+        let (d, mut app) = setup(&["a"]);
+        let wt = tempfile::tempdir().unwrap();
+        let pa = wt.path().join("a");
+        git(
+            d.path(),
+            &["worktree", "add", "-q", pa.to_str().unwrap(), "a"],
+        );
+        // Uncommitted changes in that worktree survive.
+        std::fs::write(pa.join("dirty"), "x").unwrap();
+        press(&mut app, &["R", "g"]);
+        let path = app.branches[app.cursor].worktree.clone().unwrap();
+        press(&mut app, &["enter"]);
+        assert!(app.branches[app.cursor].current, "{:?}", app.status);
+        assert_eq!(app.branches[app.cursor].name, "a");
+        assert_eq!(app.branches[app.cursor].worktree, None);
+        assert_eq!(
+            app.exit_message,
+            Some(format!("switched to a (detached worktree {path})"))
+        );
+        assert_eq!(rev(d.path(), &["branch", "--show-current"]), "a");
+        assert_eq!(rev(&pa, &["branch", "--show-current"]), "");
+        assert!(pa.join("dirty").exists());
     }
 
     #[test]

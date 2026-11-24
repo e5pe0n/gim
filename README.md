@@ -42,7 +42,8 @@ Run `gim` inside a git repository.
 
 `d` / `D` act on the visual selection when one is active, otherwise on the cursor branch.
 
-Branches checked out in another worktree are marked with `+` (in cyan). Deleting one removes that
+Branches checked out in another worktree are marked with `+` (in cyan). Checking one out detaches
+HEAD in that worktree first (`git checkout --detach`, keeping its files). Deleting one removes that
 worktree first (`git worktree remove`), which git refuses while it has changes or untracked files;
 `D` removes it anyway (`--force`), discarding them.
 
