@@ -1,6 +1,9 @@
 //! TOML configuration: key bindings and options.
 
-use std::{env, fmt, fs, io, path::PathBuf};
+use std::{
+    env, fmt, fs, io,
+    path::{Component, Path, PathBuf},
+};
 
 use ratatui::crossterm::event::{KeyCode, KeyEvent, KeyModifiers};
 use serde::Deserialize;
@@ -198,7 +201,57 @@ pub struct Config {
     pub quit_on_checkout: bool,
     /// List remote-tracking branches after the local ones.
     pub remotes: bool,
+    pub worktree: WorktreeConfig,
     pub keys: KeyMap,
+}
+
+/// Checking out branches in worktrees of their own.
+#[derive(Debug, Clone, Deserialize)]
+#[serde(default, deny_unknown_fields)]
+pub struct WorktreeConfig {
+    /// Check out (`checkout` / `checkout_new`) a branch in its own worktree, creating it if
+    /// needed, and move there, instead of switching the current worktree.
+    pub enabled: bool,
+    /// Where a branch's worktree is created. `{repo}` is the main worktree's directory name and
+    /// `{branch}` the branch name; a relative path is relative to the main worktree, and a
+    /// leading `~/` is the home directory.
+    pub path: String,
+}
+
+impl Default for WorktreeConfig {
+    fn default() -> Self {
+        WorktreeConfig {
+            enabled: false,
+            path: "../{repo}.worktrees/{branch}".into(),
+        }
+    }
+}
+
+impl WorktreeConfig {
+    /// The worktree path for `branch` of the repository whose main worktree is `main`.
+    pub fn path_for(&self, main: &Path, branch: &str) -> PathBuf {
+        let repo = main.file_name().unwrap_or_default().to_string_lossy();
+        let path = self
+            .path
+            .replace("{repo}", &repo)
+            .replace("{branch}", branch);
+        let path = match (path.strip_prefix("~/"), env::home_dir()) {
+            (Some(rest), Some(home)) => home.join(rest),
+            _ => main.join(path),
+        };
+        // Resolve `..` lexically so the path reads cleanly (e.g. in messages).
+        let mut out = PathBuf::new();
+        for c in path.components() {
+            match c {
+                Component::ParentDir => {
+                    out.pop();
+                }
+                Component::CurDir => {}
+                c => out.push(c),
+            }
+        }
+        out
+    }
 }
 
 impl Default for Config {
@@ -209,6 +262,7 @@ impl Default for Config {
             autostash: false,
             quit_on_checkout: true,
             remotes: true,
+            worktree: WorktreeConfig::default(),
             keys: KeyMap::default(),
         }
     }
@@ -272,6 +326,30 @@ up = ["e", "up"]
         assert_eq!(cfg.keys.down, Keys::of(&["n"]));
         assert_eq!(cfg.keys.up, Keys::of(&["e", "up"]));
         assert_eq!(cfg.keys.delete, Keys::of(&["d"]));
+    }
+
+    #[test]
+    fn worktree_path() {
+        let cfg = parse("[worktree]\nenabled = true").unwrap();
+        assert!(cfg.worktree.enabled);
+        let main = Path::new("/src/gim");
+        assert_eq!(
+            cfg.worktree.path_for(main, "feat/x"),
+            Path::new("/src/gim.worktrees/feat/x")
+        );
+        let cfg = parse("[worktree]\npath = \"/wt/{repo}-{branch}\"").unwrap();
+        assert!(!cfg.worktree.enabled);
+        assert_eq!(cfg.worktree.path_for(main, "a"), Path::new("/wt/gim-a"));
+        let cfg = parse("[worktree]\npath = \".worktrees/{branch}\"").unwrap();
+        assert_eq!(
+            cfg.worktree.path_for(main, "a"),
+            Path::new("/src/gim/.worktrees/a")
+        );
+        if let Some(home) = env::home_dir() {
+            let cfg = parse("[worktree]\npath = \"~/wt/{branch}\"").unwrap();
+            assert_eq!(cfg.worktree.path_for(main, "a"), home.join("wt/a"));
+        }
+        assert!(parse("[worktree]\ndir = \"x\"").is_err());
     }
 
     #[test]

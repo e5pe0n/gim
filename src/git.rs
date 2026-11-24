@@ -147,6 +147,36 @@ impl Repo {
         self.run(&args).map(|_| ())
     }
 
+    /// `git worktree add [-b <new> [--track]] <path> <start>`: a worktree at `path` for the
+    /// branch `start`, or for a new branch `new` started from `start`.
+    pub fn add_worktree(
+        &self,
+        path: &str,
+        start: &str,
+        new: Option<&str>,
+        track: bool,
+    ) -> Result<(), String> {
+        let mut args = vec!["worktree", "add", "-q"];
+        if let Some(new) = new {
+            args.extend(["-b", new]);
+            if track {
+                args.push("--track");
+            }
+        }
+        args.extend(["--", path, start]);
+        self.run(&args).map(|_| ())
+    }
+
+    /// Absolute path of the main worktree (the one holding the git dir).
+    pub fn main_worktree(&self) -> Result<PathBuf, String> {
+        let out = self.run(&["worktree", "list", "--porcelain"])?;
+        out.lines()
+            .next()
+            .and_then(|l| l.strip_prefix("worktree "))
+            .map(PathBuf::from)
+            .ok_or_else(|| "no worktree found".to_string())
+    }
+
     pub fn rename_branch(&self, old: &str, new: &str) -> Result<(), String> {
         self.run(&["branch", "-m", "--", old, new]).map(|_| ())
     }
