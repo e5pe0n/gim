@@ -212,9 +212,10 @@ pub struct WorktreeConfig {
     /// Check out (`checkout` / `checkout_new`) a branch in its own worktree, creating it if
     /// needed, and move there, instead of switching the current worktree.
     pub enabled: bool,
-    /// Where a branch's worktree is created. `{repo}` is the main worktree's directory name and
-    /// `{branch}` the branch name; a relative path is relative to the main worktree, and a
-    /// leading `~/` is the home directory.
+    /// Where a branch's worktree is created. `{repo}` is the main worktree's directory name,
+    /// `{repo_path}` its path relative to the home directory (or its absolute path without the
+    /// leading `/` when outside it) and `{branch}` the branch name. A relative path is relative to
+    /// the main worktree, and a leading `~/` is the home directory.
     pub path: String,
 }
 
@@ -222,7 +223,7 @@ impl Default for WorktreeConfig {
     fn default() -> Self {
         WorktreeConfig {
             enabled: false,
-            path: ".{repo}.worktrees/{branch}".into(),
+            path: "~/.local/share/gim/worktrees/{repo_path}/{branch}".into(),
         }
     }
 }
@@ -230,12 +231,24 @@ impl Default for WorktreeConfig {
 impl WorktreeConfig {
     /// The worktree path for `branch` of the repository whose main worktree is `main`.
     pub fn path_for(&self, main: &Path, branch: &str) -> PathBuf {
+        self.path_with_home(main, branch, env::home_dir().as_deref())
+    }
+
+    fn path_with_home(&self, main: &Path, branch: &str, home: Option<&Path>) -> PathBuf {
         let repo = main.file_name().unwrap_or_default().to_string_lossy();
+        // Unique per repository, so same-named repositories don't share worktree paths.
+        let repo_path: PathBuf = home
+            .and_then(|h| main.strip_prefix(h).ok())
+            .unwrap_or(main)
+            .components()
+            .filter(|c| matches!(c, Component::Normal(_)))
+            .collect();
         let path = self
             .path
+            .replace("{repo_path}", &repo_path.to_string_lossy())
             .replace("{repo}", &repo)
             .replace("{branch}", branch);
-        let path = match (path.strip_prefix("~/"), env::home_dir()) {
+        let path = match (path.strip_prefix("~/"), home) {
             (Some(rest), Some(home)) => home.join(rest),
             _ => main.join(path),
         };
@@ -332,11 +345,19 @@ up = ["e", "up"]
     fn worktree_path() {
         let cfg = parse("[worktree]\nenabled = true").unwrap();
         assert!(cfg.worktree.enabled);
-        let main = Path::new("/src/gim");
+        let home = Some(Path::new("/home/me"));
         assert_eq!(
-            cfg.worktree.path_for(main, "feat/x"),
-            Path::new("/src/gim/.gim.worktrees/feat/x")
+            cfg.worktree
+                .path_with_home(Path::new("/home/me/src/gim"), "feat/x", home),
+            Path::new("/home/me/.local/share/gim/worktrees/src/gim/feat/x")
         );
+        // Outside the home directory, the whole path is used.
+        assert_eq!(
+            cfg.worktree
+                .path_with_home(Path::new("/srv/gim"), "a", home),
+            Path::new("/home/me/.local/share/gim/worktrees/srv/gim/a")
+        );
+        let main = Path::new("/src/gim");
         let cfg = parse("[worktree]\npath = \"/wt/{repo}-{branch}\"").unwrap();
         assert!(!cfg.worktree.enabled);
         assert_eq!(cfg.worktree.path_for(main, "a"), Path::new("/wt/gim-a"));
