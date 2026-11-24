@@ -147,12 +147,6 @@ impl Repo {
         self.run(&args).map(|_| ())
     }
 
-    /// Detach HEAD in the worktree at `path` at its current commit, freeing its branch to be
-    /// checked out elsewhere. Its files are left as they are.
-    pub fn detach_worktree(&self, path: &str) -> Result<(), String> {
-        self.run(&["-C", path, "checkout", "--detach"]).map(|_| ())
-    }
-
     pub fn rename_branch(&self, old: &str, new: &str) -> Result<(), String> {
         self.run(&["branch", "-m", "--", old, new]).map(|_| ())
     }

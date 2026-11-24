@@ -97,6 +97,8 @@ pub struct App {
     pub quit: bool,
     /// Printed after the terminal is restored, when quitting after a checkout.
     pub exit_message: Option<String>,
+    /// Worktree moved to by checking out a branch checked out there, for `--cwd-file`.
+    pub cwd: Option<String>,
 }
 
 impl App {
@@ -124,6 +126,7 @@ impl App {
             list_state: ListState::default(),
             quit: false,
             exit_message: None,
+            cwd: None,
         };
         app.reload()?;
         if let Some(i) = app.branches.iter().position(|b| b.current) {
@@ -517,21 +520,15 @@ impl App {
                 .then_some(&local)
         };
         let (result, done) = if let Some(target) = target {
-            // A branch checked out in another worktree is freed by detaching that worktree.
-            let worktrees = self.worktrees_of(std::slice::from_ref(target));
-            let result = worktrees
-                .iter()
-                .try_for_each(|path| self.repo.detach_worktree(path))
-                .and_then(|_| self.repo.checkout(target));
-            let done = if worktrees.is_empty() {
-                format!("switched to {target}")
+            // A branch checked out in another worktree is used there: move to that worktree.
+            if let Some(path) = self.worktrees_of(std::slice::from_ref(target)).pop() {
+                self.repo = Repo::new(&path);
+                let done = format!("moved to worktree {path} ({target})");
+                self.cwd = Some(path);
+                (Ok(()), done)
             } else {
-                format!(
-                    "switched to {target} (detached worktree {})",
-                    worktrees.join(", ")
-                )
-            };
-            (result, done)
+                (self.repo.checkout(target), format!("switched to {target}"))
+            }
         } else {
             (
                 self.repo.checkout_track(&local, &name),
@@ -944,7 +941,7 @@ mod tests {
     }
 
     #[test]
-    fn checkout_detaches_other_worktree() {
+    fn checkout_moves_to_other_worktree() {
         let (d, mut app) = setup(&["a"]);
         let wt = tempfile::tempdir().unwrap();
         let pa = wt.path().join("a");
@@ -952,21 +949,22 @@ mod tests {
             d.path(),
             &["worktree", "add", "-q", pa.to_str().unwrap(), "a"],
         );
-        // Uncommitted changes in that worktree survive.
-        std::fs::write(pa.join("dirty"), "x").unwrap();
         press(&mut app, &["R", "g"]);
         let path = app.branches[app.cursor].worktree.clone().unwrap();
         press(&mut app, &["enter"]);
-        assert!(app.branches[app.cursor].current, "{:?}", app.status);
         assert_eq!(app.branches[app.cursor].name, "a");
-        assert_eq!(app.branches[app.cursor].worktree, None);
+        assert!(app.branches[app.cursor].current, "{:?}", app.status);
+        // The worktree we came from now shows main as checked out elsewhere.
+        let main = app.branches.iter().find(|b| b.name == "main").unwrap();
+        assert!(main.worktree.is_some());
+        assert_eq!(app.cwd.as_deref(), Some(path.as_str()));
         assert_eq!(
             app.exit_message,
-            Some(format!("switched to a (detached worktree {path})"))
+            Some(format!("moved to worktree {path} (a)"))
         );
-        assert_eq!(rev(d.path(), &["branch", "--show-current"]), "a");
-        assert_eq!(rev(&pa, &["branch", "--show-current"]), "");
-        assert!(pa.join("dirty").exists());
+        // Neither worktree's checkout changed.
+        assert_eq!(rev(d.path(), &["branch", "--show-current"]), "main");
+        assert_eq!(rev(&pa, &["branch", "--show-current"]), "a");
     }
 
     #[test]

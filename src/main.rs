@@ -19,7 +19,8 @@ use ratatui::crossterm::event::{self, Event, KeyEventKind};
 
 use app::App;
 
-const USAGE: &str = "usage: gim [-c|--config <path>] | -V|--version | self-update";
+const USAGE: &str =
+    "usage: gim [-c|--config <path>] [--cwd-file <path>] | -V|--version | self-update";
 
 fn main() -> ExitCode {
     match run() {
@@ -33,12 +34,14 @@ fn main() -> ExitCode {
 
 fn run() -> Result<(), String> {
     let mut config_path = config::default_path();
+    let mut cwd_file = None;
     let mut args = env::args().skip(1);
     while let Some(arg) = args.next() {
         match arg.as_str() {
             "-c" | "--config" => {
                 config_path = Some(PathBuf::from(args.next().ok_or(USAGE)?));
             }
+            "--cwd-file" => cwd_file = Some(PathBuf::from(args.next().ok_or(USAGE)?)),
             "-V" | "--version" => {
                 println!("gim {}", env!("CARGO_PKG_VERSION"));
                 return Ok(());
@@ -63,6 +66,10 @@ fn run() -> Result<(), String> {
     ratatui::restore();
     if let Some(msg) = &app.exit_message {
         println!("{msg}");
+    }
+    // For a shell function to `cd` into the worktree gim moved to.
+    if let (Some(file), Some(dir)) = (&cwd_file, &app.cwd) {
+        std::fs::write(file, dir).map_err(|e| format!("{}: {e}", file.display()))?;
     }
     result.map_err(|e| e.to_string())
 }

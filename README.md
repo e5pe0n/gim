@@ -17,6 +17,8 @@ Run `gim` inside a git repository.
 
 - `gim --version` (`-V`) prints the version.
 - `gim self-update` replaces the binary with the latest release.
+- `gim --cwd-file <path>` writes the worktree gim moved to into `<path>` on exit (see
+  [Moving to a worktree](#moving-to-a-worktree)).
 
 ## Keys (defaults)
 
@@ -42,10 +44,27 @@ Run `gim` inside a git repository.
 
 `d` / `D` act on the visual selection when one is active, otherwise on the cursor branch.
 
-Branches checked out in another worktree are marked with `+` (in cyan). Checking one out detaches
-HEAD in that worktree first (`git checkout --detach`, keeping its files). Deleting one removes that
+Branches checked out in another worktree are marked with `+` (in cyan). Checking one out moves gim
+to that worktree (see [Moving to a worktree](#moving-to-a-worktree)). Deleting one removes that
 worktree first (`git worktree remove`), which git refuses while it has changes or untracked files;
 `D` removes it anyway (`--force`), discarding them.
+
+### Moving to a worktree
+
+A branch checked out in another worktree can't be checked out here too, so `enter` on one moves gim
+to that worktree instead: the list is reloaded there and every action runs there. gim can't change
+your shell's directory itself; to `cd` into the worktree when gim quits, use a shell function like:
+
+```sh
+gim() {
+  local tmp dir
+  tmp="$(mktemp)"
+  command gim --cwd-file "$tmp" "$@"
+  dir="$(cat -- "$tmp")"
+  rm -f -- "$tmp"
+  [ -n "$dir" ] && [ "$dir" != "$PWD" ] && cd -- "$dir"
+}
+```
 
 ### Remote branches
 
