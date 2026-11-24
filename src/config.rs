@@ -212,7 +212,8 @@ pub struct WorktreeConfig {
     /// Check out (`checkout` / `checkout_new`) a branch in its own worktree, creating it if
     /// needed, and move there, instead of switching the current worktree.
     pub enabled: bool,
-    /// Where a branch's worktree is created. `{repo}` is the main worktree's directory name,
+    /// Where a branch's worktree is created. `{data_home}` is `$XDG_DATA_HOME`, or
+    /// `~/.local/share` when unset; `{repo}` is the main worktree's directory name,
     /// `{repo_path}` its path relative to the home directory (or its absolute path without the
     /// leading `/` when outside it) and `{branch}` the branch name. A relative path is relative to
     /// the main worktree, and a leading `~/` is the home directory.
@@ -223,7 +224,7 @@ impl Default for WorktreeConfig {
     fn default() -> Self {
         WorktreeConfig {
             enabled: false,
-            path: "~/.local/share/gim/worktrees/{repo_path}/{branch}".into(),
+            path: "{data_home}/gim/worktrees/{repo_path}/{branch}".into(),
         }
     }
 }
@@ -231,10 +232,26 @@ impl Default for WorktreeConfig {
 impl WorktreeConfig {
     /// The worktree path for `branch` of the repository whose main worktree is `main`.
     pub fn path_for(&self, main: &Path, branch: &str) -> PathBuf {
-        self.path_with_home(main, branch, env::home_dir().as_deref())
+        // Per the XDG spec, a relative `$XDG_DATA_HOME` is ignored.
+        let data_home = env::var_os("XDG_DATA_HOME")
+            .map(PathBuf::from)
+            .filter(|p| p.is_absolute());
+        self.path_with(
+            main,
+            branch,
+            env::home_dir().as_deref(),
+            data_home.as_deref(),
+        )
     }
 
-    fn path_with_home(&self, main: &Path, branch: &str, home: Option<&Path>) -> PathBuf {
+    fn path_with(
+        &self,
+        main: &Path,
+        branch: &str,
+        home: Option<&Path>,
+        data_home: Option<&Path>,
+    ) -> PathBuf {
+        let data_home = data_home.map_or("~/.local/share".into(), Path::to_string_lossy);
         let repo = main.file_name().unwrap_or_default().to_string_lossy();
         // Unique per repository, so same-named repositories don't share worktree paths.
         let repo_path: PathBuf = home
@@ -245,6 +262,7 @@ impl WorktreeConfig {
             .collect();
         let path = self
             .path
+            .replace("{data_home}", &data_home)
             .replace("{repo_path}", &repo_path.to_string_lossy())
             .replace("{repo}", &repo)
             .replace("{branch}", branch);
@@ -346,15 +364,21 @@ up = ["e", "up"]
         let cfg = parse("[worktree]\nenabled = true").unwrap();
         assert!(cfg.worktree.enabled);
         let home = Some(Path::new("/home/me"));
-        assert_eq!(
+        let wt = |main: &str, branch: &str, data_home: Option<&str>| {
             cfg.worktree
-                .path_with_home(Path::new("/home/me/src/gim"), "feat/x", home),
+                .path_with(Path::new(main), branch, home, data_home.map(Path::new))
+        };
+        assert_eq!(
+            wt("/home/me/src/gim", "feat/x", None),
             Path::new("/home/me/.local/share/gim/worktrees/src/gim/feat/x")
+        );
+        assert_eq!(
+            wt("/home/me/src/gim", "a", Some("/data")),
+            Path::new("/data/gim/worktrees/src/gim/a")
         );
         // Outside the home directory, the whole path is used.
         assert_eq!(
-            cfg.worktree
-                .path_with_home(Path::new("/srv/gim"), "a", home),
+            wt("/srv/gim", "a", None),
             Path::new("/home/me/.local/share/gim/worktrees/srv/gim/a")
         );
         let main = Path::new("/src/gim");

@@ -135,11 +135,14 @@ remotes = true
 [worktree]
 # Check out each branch in its own worktree (`enter` / `b`), creating it if needed, and move there.
 enabled = false
-# Where a branch's worktree is created: `{repo}` is the main worktree's directory name,
-# `{repo_path}` its path relative to your home directory (e.g. `src/gim`; the absolute path without
-# the leading `/` outside it) and `{branch}` the branch name. A relative path is relative to the main
-# worktree; `~/` is your home directory.
-path = "~/.local/share/gim/worktrees/{repo_path}/{branch}"
+# Where a branch's worktree is created. Placeholders:
+#   {data_home}  `$XDG_DATA_HOME`, or `~/.local/share` when unset
+#   {repo_path}  the main worktree's path relative to your home directory (e.g. `src/gim`), or its
+#                absolute path without the leading `/` when outside it
+#   {repo}       the main worktree's directory name
+#   {branch}     the branch name
+# A relative path is relative to the main worktree; `~/` is your home directory.
+path = "{data_home}/gim/worktrees/{repo_path}/{branch}"
 
 [keys]
 up           = ["k", "up"]
